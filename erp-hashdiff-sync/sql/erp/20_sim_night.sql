@@ -52,8 +52,8 @@ BEGIN
                @del_ppm = IIF(@churn = 'high', 100, 20);
         SET @t = CONCAT(N'erp.dbo.', QUOTENAME(@name));
 
-        SELECT @keys = STRING_AGG(CAST(QUOTENAME(column_name) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY key_ordinal),
-               @key_exprs = STRING_AGG(dbo.value_sql(table_name, ordinal, 0, @seed), N', ') WITHIN GROUP (ORDER BY key_ordinal),
+        SELECT @keys = STRING_AGG(CAST(QUOTENAME(column_name) AS nvarchar(max)), N', '':'', ') WITHIN GROUP (ORDER BY key_ordinal),
+               @key_exprs = STRING_AGG(dbo.value_sql(table_name, ordinal, 0, @seed), N', '':'', ') WITHIN GROUP (ORDER BY key_ordinal),
                @key_match = STRING_AGG(CAST(CONCAT(N'x.', QUOTENAME(column_name), N' = ', dbo.value_sql(table_name, ordinal, 0, @seed))
                                             AS nvarchar(max)), N' AND ') WITHIN GROUP (ORDER BY key_ordinal)
         FROM dbo.design_column WHERE table_name = @name AND role = 'key';
@@ -64,7 +64,7 @@ BEGIN
         FROM dbo.design_column WHERE table_name = @name;
 
         -- Deletes. No tombstone, no flag: the row is simply gone.
-        SET @sql = CONCAT(N'DELETE FROM ', @t, N' WHERE (CHECKSUM(', @keys, N', @night, @seed, 1) & 2147483647) % 1000000 < ', @del_ppm,
+        SET @sql = CONCAT(N'DELETE FROM ', @t, N' WHERE ', dbo.pick_sql(@keys, N'@night', 1), N' % 1000000 < ', @del_ppm,
                           N'; SET @rc = @@ROWCOUNT;');
         EXEC sp_executesql @sql, N'@night int, @seed int, @rc int OUTPUT', @night, @seed, @deleted OUTPUT;
 
@@ -83,16 +83,16 @@ BEGIN
             SET @sets = CONCAT(@sets, N', modified_on = CASE WHEN x.nn % 10 < 7 THEN ',
                                N'DATEADD(minute, CAST(x.nn % 600 AS int), CAST(''', @day, N' 08:00'' AS datetime)) ',
                                N'ELSE modified_on END');
-        SET @sql = CONCAT(N'WITH x AS (SELECT *, CAST(CHECKSUM(', @keys, N', @night, @seed, 2) & 2147483647 AS bigint) AS nn FROM ', @t,
-                          N' WHERE (CHECKSUM(', @keys, N', @night, @seed, 3) & 2147483647) % 1000000 < ', @upd_ppm, N') ',
+        SET @sql = CONCAT(N'WITH x AS (SELECT *, ', dbo.pick_sql(@keys, N'@night', 2), N' AS nn FROM ', @t,
+                          N' WHERE ', dbo.pick_sql(@keys, N'@night', 3), N' % 1000000 < ', @upd_ppm, N') ',
                           N'UPDATE x SET ', @sets, N'; SET @rc = @@ROWCOUNT;');
         EXEC sp_executesql @sql, N'@night int, @seed int, @rc int OUTPUT', @night, @seed, @updated OUTPUT;
         SET @stale = 0;
         IF @dates = 1
         BEGIN
             SET @sql = CONCAT(N'SELECT @rc = COUNT(*) FROM ', @t,
-                              N' WHERE (CHECKSUM(', @keys, N', @night, @seed, 3) & 2147483647) % 1000000 < ', @upd_ppm,
-                              N' AND (CAST(CHECKSUM(', @keys, N', @night, @seed, 2) & 2147483647 AS bigint)) % 10 >= 7;');
+                              N' WHERE ', dbo.pick_sql(@keys, N'@night', 3), N' % 1000000 < ', @upd_ppm,
+                              N' AND ', dbo.pick_sql(@keys, N'@night', 2), N' % 10 >= 7;');
             EXEC sp_executesql @sql, N'@night int, @seed int, @rc int OUTPUT', @night, @seed, @stale OUTPUT;
         END;
 
@@ -117,8 +117,8 @@ BEGIN
         BEGIN
             SET @sql = CONCAT(N'INSERT INTO ', @t, N' (', @names, N') SELECT ', @exprs,
                               N' FROM erp_sim.dbo.numbers n WHERE n.n < ', @next,
-                              N' AND (CHECKSUM(', @key_exprs, N', @night - 1, @seed, 1) & 2147483647) % 1000000 < ', @del_ppm,
-                              N' AND (CHECKSUM(', @key_exprs, N', @night, @seed, 4) & 2147483647) % 4 = 0',
+                              N' AND ', dbo.pick_sql(@key_exprs, N'@night - 1', 1), N' % 1000000 < ', @del_ppm,
+                              N' AND ', dbo.pick_sql(@key_exprs, N'@night', 4), N' % 4 = 0',
                               N' AND NOT EXISTS (SELECT 1 FROM ', @t, N' x WHERE ', @key_match, N')',
                               N'; SET @rc = @@ROWCOUNT;');
             EXEC sp_executesql @sql, N'@night int, @seed int, @rc int OUTPUT', @night, @seed, @reinserted OUTPUT;

@@ -181,6 +181,18 @@ BEGIN
 END;
 GO
 
+-- SQL text for a uniform pseudo-random bigint in [0, 4294967296) from a row's
+-- key values, the night, the seed, and a purpose tag. MD5-based: CHECKSUM spreads
+-- poorly over sequential keys.
+CREATE OR ALTER FUNCTION dbo.pick_sql (@key_values nvarchar(max), @night_sql nvarchar(50), @tag int)
+RETURNS nvarchar(max)
+AS
+BEGIN
+    RETURN CONCAT(N'CAST(CAST(HASHBYTES(''MD5'', CONCAT(', @key_values, N', '':'', ', @night_sql, N', '':'', @seed, '':', @tag,
+                  N''')) AS binary(4)) AS bigint)');
+END;
+GO
+
 -- Design the schema: tables, key shapes, sizes, churn, columns.
 CREATE OR ALTER PROCEDURE dbo.usp_design
     @seed int = 7, @tables int = 120, @total_rows int = 1500000
@@ -241,8 +253,7 @@ BEGIN
 
         SET @r = dbo.rnd(@seed, @i, 6);
         SET @shape = CASE WHEN @r < 0.25 THEN 'I' WHEN @r < 0.70 THEN 'IC' WHEN @r < 0.90 THEN 'ICD' ELSE 'ICC' END;
-        SET @r = dbo.rnd(@seed, @i, 9);
-        SET @churn = CASE WHEN @module = 'cf' OR @r < 0.30 THEN 'static' WHEN @r < 0.80 THEN 'low' ELSE 'high' END;
+        SET @churn = 'static';  -- set after sizing, below
         SET @wide = IIF(dbo.rnd(@seed, @i, 3) < 0.05, 1, 0);
         SET @dates = IIF(dbo.rnd(@seed, @i, 10) < 0.85, 1, 0);
         -- Log-normal size weight: a few large tables, many small ones.
@@ -315,6 +326,17 @@ BEGIN
             WHEN ROUND(@total_rows * weight / @total, 0) < 10 THEN 10
             ELSE CAST(ROUND(@total_rows * weight / @total, 0) AS int) END;
     UPDATE dbo.design_table SET next_n = row_count + 1;
+
+    -- How busy each table is. Configuration tables never change. Large tables
+    -- are the transactional ones, so they always change; small ones mostly
+    -- change a little or not at all.
+    UPDATE dbo.design_table
+    SET churn = CASE
+        WHEN module = 'cf' THEN 'static'
+        WHEN row_count >= 20000 THEN IIF(dbo.rnd(@seed, ordinal, 9) < 0.4, 'high', 'low')
+        WHEN dbo.rnd(@seed, ordinal, 9) < 0.40 THEN 'static'
+        WHEN dbo.rnd(@seed, ordinal, 9) < 0.85 THEN 'low'
+        ELSE 'high' END;
 
     DELETE FROM dbo.sim_state;
     INSERT INTO dbo.sim_state VALUES (@seed, 0);

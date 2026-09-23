@@ -6,8 +6,8 @@ DECLARE @runs int = (SELECT COUNT(*) FROM sync.run);
 DECLARE @tables int = (SELECT COUNT(*) FROM sync.manifest WHERE is_active = 1);
 DECLARE @failures int = (SELECT COUNT(*) FROM sync.run_table_log WHERE status <> 'succeeded');
 DECLARE @dirty int = (SELECT COUNT(*) FROM audit.result
-                      WHERE missing + extra + mismatched + duplicate_keys + deleted_but_present > 0);
-DECLARE @audited int = (SELECT COUNT(*) FROM audit.result);
+                      WHERE copy_name = 'replica' AND missing + extra + mismatched + duplicate_keys + deleted_but_present > 0);
+DECLARE @audited int = (SELECT COUNT(*) FROM audit.result WHERE copy_name = 'replica');
 
 PRINT CONCAT('**Result: ', IIF(@failures = 0 AND @dirty = 0 AND @audited = @runs * @tables, 'PASS', 'FAIL'), '.** ',
              @runs, ' runs (the first load and ', @runs - 1, ' nightly runs) across ', @tables, ' tables. ',
@@ -35,7 +35,7 @@ DECLARE c CURSOR LOCAL FAST_FORWARD FOR
     CROSS APPLY (SELECT COUNT(*) n, SUM(IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present = 0, 1, 0)) clean,
                         SUM(missing) missing, SUM(extra) extra, SUM(mismatched) mismatched,
                         SUM(duplicate_keys) dups, SUM(deleted_but_present) del_present
-                 FROM audit.result WHERE run_id = r.run_id) a
+                 FROM audit.result WHERE copy_name = 'replica' AND run_id = r.run_id) a
     ORDER BY r.run_id;
 OPEN c; FETCH NEXT FROM c INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c INTO @line; END;

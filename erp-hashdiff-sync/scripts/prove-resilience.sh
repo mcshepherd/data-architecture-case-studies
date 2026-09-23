@@ -31,7 +31,8 @@ logged() { wq "SELECT CONCAT(ISNULL($2, 0), '') FROM sync.run_table_log WHERE lo
 echo "rebuild and first load"
 bash scripts/build-erp.sh 7 >/dev/null
 sql erp -i /sql/erp/30_sim_scenarios.sql >/dev/null
-wq "EXEC sync.usp_reset; DELETE FROM audit.result; DELETE FROM sync.fault; EXEC sync.usp_probe_metadata;" >/dev/null
+wq "EXEC sync.usp_reset; DELETE FROM audit.result; DELETE FROM sync.fault; DELETE FROM sync.alert; EXEC sync.usp_probe_metadata;" >/dev/null
+curl -s -X DELETE http://127.0.0.1:18025/api/v1/messages >/dev/null  # empty the Mailpit inbox
 sync_night
 f04=proofs/04-failure-and-recovery.md
 {
@@ -110,6 +111,38 @@ F_aud=$(wq "SELECT CONCAT(SUM(IIF(missing + extra + mismatched + duplicate_keys 
     echo "- **C:** nothing is applied until every batch has been fetched and staged, and then everything is applied in one transaction. A table that fails is left exactly as it was the night before, and the next run picks up everything it missed."
     echo "- **E:** the guard compares the pulled key count with the replica's active rows. Without it, the vanished rows would have been flagged deleted, and restored the next night. The breach is logged and not retried."
 } >> "$f04"
+
+echo "alerts"
+# Wait for Database Mail to hand everything to the mail server, then read the
+# inbox back from Mailpit's API.
+for _ in $(seq 1 30); do
+    [[ $(wq "SELECT COUNT(*) FROM msdb.dbo.sysmail_unsentitems") == 0 ]] && break
+    sleep 2
+done
+sleep 3
+runs=$(wq "SELECT COUNT(*) FROM sync.run")
+python3 - "$runs" >> "$f04" <<'PY'
+import json, sys, urllib.request
+api = "http://127.0.0.1:18025/api/v1"
+msgs = json.load(urllib.request.urlopen(f"{api}/messages"))["messages"]
+msgs.sort(key=lambda m: m["Created"])
+print()
+print("## Alerts")
+print()
+print(f"The runner calls `sync.usp_alert_run` at the end of every run, as the original SSIS package ran a Send Mail task on failure: "
+      f"one email per run, and only if a table ended the run failed. It goes out through Database Mail to Mailpit, which catches it. "
+      f"Over the {sys.argv[1]} runs above, {len(msgs)} email{'s' if len(msgs) != 1 else ''} went out. Scenarios A, B, and D sent none: "
+      f"every table there ended its run succeeded, even where an attempt failed along the way.")
+for m in msgs:
+    full = json.load(urllib.request.urlopen(f"{api}/message/{m['ID']}"))
+    to = ", ".join(a["Address"] for a in full["To"])
+    print()
+    print(f"**{full['Subject']}** (to {to}, via Database Mail)")
+    print()
+    print("```")
+    print(full["Text"].strip())
+    print("```")
+PY
 
 echo "edge cases"
 key_table=$(eq "SELECT dbo.key_case_table()")

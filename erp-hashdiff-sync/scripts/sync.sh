@@ -7,7 +7,8 @@
 #   scripts/sync.sh [--run-at 'YYYY-MM-DD HH:MM'] [--wipe] [--parallel N] [table ...]
 #
 # Each table gets up to three attempts. A variance-guard breach is logged and
-# not retried: rerunning would pull the same short count.
+# not retried: rerunning would pull the same short count. At the end, one alert
+# email goes out if any table ended the run failed.
 source "$(dirname "$0")/lib.sh"
 run_at="NULL"; wipe=0; parallel=6; tables=()
 while [[ $# -gt 0 ]]; do
@@ -54,4 +55,6 @@ wsql -Q "SET NOCOUNT ON; $last
     SELECT CONCAT('run ', $run_id, ': ', SUM(IIF(status = 'succeeded', 1, 0)), ' succeeded, ',
                   SUM(IIF(status <> 'succeeded', 1, 0)), ' not') FROM last WHERE rn = 1"
 failed=$(wsql -Q "SET NOCOUNT ON; $last SELECT COUNT(*) FROM last WHERE rn = 1 AND status <> 'succeeded'")
+# Like the SSIS Send Mail task on failure: one email if any table ended the run failed.
+wsql -Q "EXEC sync.usp_alert_run $run_id" >/dev/null
 exit $((failed > 0))

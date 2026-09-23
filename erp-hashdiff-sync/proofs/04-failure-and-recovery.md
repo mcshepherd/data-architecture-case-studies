@@ -7,14 +7,38 @@ Each scenario runs on a real night of ERP activity, with a fault injected where 
 | Scenario | Injected | What the process did | Replica | Audit |
 |---|---|---|---|---|
 | **A. Batch failures** on `tm_timesheet_3`, night 1 | 2 fetch batches time out | succeeded after 2 batch retries | Updated | clean |
-| **B. A table attempt fails** on `pj_project`, night 2 | 3 fetch calls time out: one batch fails all three of its tries | failed (Error 50002: Query timeout expired (injected fault 11, call 3 of 3).); then succeeded | Updated on the second attempt | clean |
-| **C. A table fails for the night** on `bl_fee`, night 3 | 9 fetch calls time out: every attempt fails | failed (Error 50002: Query timeout expired (injected fault 12, call 3 of 9).); then failed (Error 50002: Query timeout expired (injected fault 12, call 6 of 9).); then failed (Error 50002: Query timeout expired (injected fault 12, call 9 of 9).) | Untouched. Before: 127,696 rows, 3 flagged deleted, checksum 541317085. After: 127,696 rows, 3 flagged deleted, checksum 541317085. | 13 missing, 6 extra, 12 stale: that night's changes not yet applied, nothing half-applied |
+| **B. A table attempt fails** on `pj_project`, night 2 | 3 fetch calls time out: one batch fails all three of its tries | failed (Error 50002: Query timeout expired (injected fault 19, call 3 of 3).); then succeeded | Updated on the second attempt | clean |
+| **C. A table fails for the night** on `bl_fee`, night 3 | 9 fetch calls time out: every attempt fails | failed (Error 50002: Query timeout expired (injected fault 20, call 3 of 9).); then failed (Error 50002: Query timeout expired (injected fault 20, call 6 of 9).); then failed (Error 50002: Query timeout expired (injected fault 20, call 9 of 9).) | Untouched. Before: 127,696 rows, 3 flagged deleted, checksum 541317085. After: 127,696 rows, 3 flagged deleted, checksum 541317085. | 13 missing, 6 extra, 12 stale: that night's changes not yet applied, nothing half-applied |
 | **C, next night** | nothing | succeeded | Caught up: two nights of changes applied | clean |
-| **D. The key-and-hash pull times out** on `gl_period_5`, night 5 | 1 pull times out | failed (Error 50002: Query timeout expired (injected fault 13, call 1 of 1).); then succeeded | Updated on the second attempt | clean |
+| **D. The key-and-hash pull times out** on `gl_period_5`, night 5 | 1 pull times out | failed (Error 50002: Query timeout expired (injected fault 21, call 1 of 1).); then succeeded | Updated on the second attempt | clean |
 | **E. A short pull** on `pj_project`, night 6 | 6,785 rows (5%) vanish from the ERP, as in a partial restore | variance (Error 50010: Variance guard: pulled 129344 keys, replica has 136002 active rows, allowance 1.0 percent.) | Untouched: no mass soft-delete. Before: 136,061 rows, 59 flagged deleted, checksum -1506025831. After: 136,061 rows, 59 flagged deleted, checksum -1506025831. | not audited: the ERP was short that night |
 | **E, next night** | rows restored | succeeded | Caught up | clean |
-| **F. Wipe and reload** of every table | `--wipe` | 120 of 120 tables reloaded through the normal path, 1,227,989 rows, in 1 min 49 s | Rebuilt from scratch | 120 of 120 tables clean |
+| **F. Wipe and reload** of every table | `--wipe` | 120 of 120 tables reloaded through the normal path, 1,227,989 rows, in 1 min 52 s | Rebuilt from scratch | 120 of 120 tables clean |
 
 - **A and B:** retries are nested. A failed batch is retried inside the procedure; a table whose batch fails three times is retried by the runner. A failed `INSERT ... EXEC` inserts nothing, so a retry never duplicates rows.
 - **C:** nothing is applied until every batch has been fetched and staged, and then everything is applied in one transaction. A table that fails is left exactly as it was the night before, and the next run picks up everything it missed.
 - **E:** the guard compares the pulled key count with the replica's active rows. Without it, the vanished rows would have been flagged deleted, and restored the next night. The breach is logged and not retried.
+
+## Alerts
+
+The runner calls `sync.usp_alert_run` at the end of every run, as the original SSIS package ran a Send Mail task on failure: one email per run, and only if a table ended the run failed. It goes out through Database Mail to Mailpit, which catches it. Over the 9 runs above, 2 emails went out. Scenarios A, B, and D sent none: every table there ended its run succeeded, even where an attempt failed along the way.
+
+**[sync] Run 4: 1 table failed** (to data-team@example.com, via Database Mail)
+
+```
+Run 4 (2026-01-04 02:00:00): 119 tables succeeded, 1 did not.
+
+bl_fee: failed after 3 attempts.
+  Error 50002: Query timeout expired (injected fault 20, call 9 of 9).
+  The replica was left as it was before this run; the next run picks up what this one missed.
+```
+
+**[sync] Run 7: 1 stopped by the variance guard** (to data-team@example.com, via Database Mail)
+
+```
+Run 7 (2026-01-07 02:00:00): 119 tables succeeded, 1 did not.
+
+pj_project: stopped by the variance guard after 1 attempt.
+  Error 50010: Variance guard: pulled 129344 keys, replica has 136002 active rows, allowance 1.0 percent.
+  Not retried. The replica was left untouched. Check the source before the next run.
+```

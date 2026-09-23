@@ -1,6 +1,8 @@
-# Two SQL Server instances:
+# Two SQL Server instances and a mail catcher:
 #   erp        stand-in for the vendor ERP. Read-only to the warehouse.
 #   warehouse  the local server. Reaches erp only through a linked server.
+#   mailpit    catches the warehouse's alert emails; nothing is delivered.
+#              Inbox and API at http://127.0.0.1:18025.
 
 x-mssql: &mssql
   image: mcr.microsoft.com/mssql/server:2022-latest
@@ -30,3 +32,10 @@ services:
     depends_on:
       erp:
         condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  mailpit:
+    image: axllent/mailpit:latest
+    hostname: mailpit
+    ports: ["127.0.0.1:18025:8025"]

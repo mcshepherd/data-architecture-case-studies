@@ -6,15 +6,18 @@ Work in progress. Proofs so far:
 
 - [Infrastructure](proofs/00-infrastructure.md): the warehouse reaches the ERP only through a read-only linked server with a hard timeout, and that timeout is silent inside a procedure.
 - [Stand-in ERP](proofs/01-stand-in-erp.md): 120 tables and 1.2M rows with undeclared composite keys, quoted key codes, and untrustworthy dates; a hand-kept key manifest; and the single wrapper that enforces the driver's text limit and hard timeout.
+- [Nightly correctness](proofs/02-nightly-correctness.md): the first load and seven nights of inserts, updates, untraceable deletes, and re-created keys. After every run, an independent audit compared every row of every table with the ERP: 960 of 960 table audits clean.
 
 ## Run it
 
-Requires Docker (Docker Desktop or OrbStack). About three minutes from nothing to both proofs.
+Requires Docker (Docker Desktop or OrbStack). About three minutes from nothing to the first two proofs; the nightly proof takes about 40 more.
 
 ```sh
 ./scripts/up.sh            # start both SQL Server instances and install all SQL objects
 ./scripts/build-erp.sh     # generate the stand-in ERP (seed 7, about a minute)
 ./scripts/prove-infra.sh   # regenerate proofs/00-infrastructure.md
 ./scripts/prove-erp.sh     # regenerate proofs/01-stand-in-erp.md
+./scripts/sync.sh          # run one sync of every manifest table
+./scripts/prove-sync.sh 7  # rebuild the ERP, run the first load and 7 nights, audit each (about 40 minutes)
 docker compose down        # stop and remove the instances
 ```

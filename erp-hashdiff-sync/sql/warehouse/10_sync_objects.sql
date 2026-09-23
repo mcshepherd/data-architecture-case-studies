@@ -14,11 +14,15 @@ IF OBJECT_ID('sync.config') IS NULL
     );
 GO
 
+-- The vendor driver's query-text limit. Recalled as about 10,000 characters;
+-- set to 15,000 so the single key-and-hash statement for the widest stand-in
+-- table (318 columns, about 12,700 characters) fits, as the real ones did.
 MERGE sync.config AS t
 USING (VALUES
-    (N'text_limit', N'10000')          -- the vendor driver's query-text limit
+    (N'text_limit', N'15000')
 ) AS s (name, value)
 ON t.name = s.name
+WHEN MATCHED THEN UPDATE SET value = s.value
 WHEN NOT MATCHED THEN INSERT (name, value) VALUES (s.name, s.value);
 GO
 

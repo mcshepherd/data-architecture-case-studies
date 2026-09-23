@@ -127,14 +127,20 @@ BEGIN
             WHEN @ko = 1 AND @shape = 'I'  THEN N'CAST(n.n AS int)'
             WHEN @ko = 1 AND @shape = 'IC' THEN CONCAT(N'CAST((n.n - 1) / ', @a, N' + 1 AS int)')
             WHEN @ko = 1                   THEN CONCAT(N'CAST((n.n - 1) / ', @a * @b, N' + 1 AS int)')
-            WHEN @ko = 2 AND @shape = 'IC' THEN dbo.code_sql(CONCAT(N'(n.n - 1) % ', @a), N'C')
-            WHEN @ko = 2                   THEN dbo.code_sql(CONCAT(N'((n.n - 1) / ', @b, N') % ', @a), N'C')
+            WHEN @ko = 2 AND @shape = 'IC' THEN CONCAT(N'CAST(', dbo.code_sql(CONCAT(N'(n.n - 1) % ', @a), N'C'), N' AS varchar(12))')
+            WHEN @ko = 2                   THEN CONCAT(N'CAST(', dbo.code_sql(CONCAT(N'((n.n - 1) / ', @b, N') % ', @a), N'C'), N' AS varchar(12))')
             WHEN @ko = 3 AND @shape = 'ICD' THEN CONCAT(N'DATEADD(day, ((n.n - 1) % ', @b, N') * 7, CAST(''2020-01-06'' AS date))')
-            WHEN @ko = 3 AND @shape = 'ICC' THEN dbo.code_sql(CONCAT(N'(n.n - 1) % ', @b), N'L')
+            WHEN @ko = 3 AND @shape = 'ICC' THEN CONCAT(N'CAST(', dbo.code_sql(CONCAT(N'(n.n - 1) % ', @b), N'L'), N' AS varchar(8))')
         END;
         RETURN @v;
     END;
 
+    -- Rows created at build time get scattered past dates. Rows created on a
+    -- simulated night get that business day's date, still missing 10% of the time.
+    DECLARE @day nchar(10) = CONVERT(nchar(10), DATEADD(day, @night - 1, CAST('2026-01-01' AS date)), 23);
+    IF @role IN ('created', 'modified') AND @night > 0
+        RETURN CONCAT(N'CASE WHEN ', @h, N' % 10 = 0 THEN NULL ',
+                      N'ELSE DATEADD(minute, CAST(', @h, N' % 600 AS int), CAST(''', @day, N' 08:00'' AS datetime)) END');
     IF @role = 'created'
         RETURN CONCAT(N'CASE WHEN ', @h, N' % 10 = 0 THEN NULL ',
                       N'ELSE DATEADD(minute, -CAST(', @h, N' % 5000000 AS int), CAST(''2026-01-01'' AS datetime)) END');

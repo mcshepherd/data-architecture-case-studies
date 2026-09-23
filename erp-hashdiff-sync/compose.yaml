@@ -1,0 +1,32 @@
+# Two SQL Server instances:
+#   erp        stand-in for the vendor ERP. Read-only to the warehouse.
+#   warehouse  the local server. Reaches erp only through a linked server.
+
+x-mssql: &mssql
+  image: mcr.microsoft.com/mssql/server:2022-latest
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_PID: Developer
+    MSSQL_SA_PASSWORD: ${SA_PASSWORD:?set SA_PASSWORD in .env}
+  volumes:
+    - ./sql:/sql:ro
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 20s
+
+services:
+  erp:
+    <<: *mssql
+    hostname: erp
+    ports: ["127.0.0.1:14331:1433"]
+
+  warehouse:
+    <<: *mssql
+    hostname: warehouse
+    ports: ["127.0.0.1:14332:1433"]
+    depends_on:
+      erp:
+        condition: service_healthy

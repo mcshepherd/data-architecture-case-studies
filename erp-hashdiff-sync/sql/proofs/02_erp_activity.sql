@@ -5,7 +5,7 @@ USE erp_sim;
 
 PRINT '## What changed in the ERP';
 PRINT '';
-PRINT 'From the simulator''s own log, which the sync cannot see. The sync''s "changed" count runs lower than updates plus re-created keys, because an update that writes the value already there changes nothing, and the row hash correctly stays the same. The gap is largest on nights when a busy table''s only updated column is a bit: on night 3, every update to `bl_fee` rewrote one bit column, and most wrote the value it already had. The audit confirms no real change was missed.';
+PRINT 'These are the UPDATE statements the ERP''s own business activity ran, from the simulator''s log, which the sync cannot see. Some of them write the value a column already holds, such as setting a bit to 1 when it is already 1. The row does not change, so its hash does not change, and the sync correctly does nothing: no fetch, no write. That is why the sync''s "changed" count runs below updates plus re-created keys here. The gap is largest when a busy table''s only updated column is a bit: on night 3, every update to `bl_fee` rewrote one bit column, and most wrote the value it already had. The audit confirms no real change was missed.';
 PRINT '';
 PRINT '| Night | Inserted | Updated | Deleted (no tombstone) | Deleted keys re-created | Updates that left modified_on stale |';
 PRINT '|---|---|---|---|---|---|';

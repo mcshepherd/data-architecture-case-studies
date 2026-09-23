@@ -42,7 +42,7 @@ OPEN c; FETCH NEXT FROM c INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c INTO @line; END;
 CLOSE c; DEALLOCATE c;
 PRINT '';
-PRINT 'The drift grows night over night and never raises an error. Nothing in the old process''s own logs would show it.';
+PRINT 'The drift grows night over night and never raises an error. Nothing in the old process''s own logs would show it. The exact counts vary slightly from run to run: when the package''s key matches several rows, SQL Server applies whichever it reaches first, which is itself part of the bug.';
 PRINT '';
 
 PRINT '## Where the old process goes wrong';
@@ -88,4 +88,4 @@ OPEN c3; FETCH NEXT FROM c3 INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c3 INTO @line; END;
 CLOSE c3; DEALLOCATE c3;
 PRINT '';
-PRINT 'The old process reloads most tables in full every night and pulls only a window of the large ones. The new process compares every key every night, but fetches full rows only for what changed. At this scale both finish in minutes; the difference that matters here is correctness. At the original site, the old process took about 9 hours a night and the new one about 38 minutes.';
+PRINT 'The old process reloads most tables in full every night and pulls only a window of the large ones. The new process compares every key every night, but fetches full rows only for what changed. At this scale both finish in under a minute a night, so the difference that matters here is correctness. At the original site, the old process took about 9 hours a night and the new one about 38 minutes.';

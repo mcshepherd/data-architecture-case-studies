@@ -300,7 +300,8 @@ BEGIN
         IF @wipe = 0 AND @active_before > 0 AND @pulled < @active_before * (1 - @allowance)
         BEGIN
             SET @msg = CONCAT(N'Variance guard: pulled ', @pulled, N' keys, replica has ', @active_before,
-                              N' active rows, allowance ', @allowance * 100, N'%.');
+                              N' active rows, allowance ', CAST(@allowance * 100 AS decimal(5, 1)), N' percent.');
+            -- (THROW reserves the percent sign, so it is spelled out.)
             THROW 50010, @msg, 1;
         END;
 

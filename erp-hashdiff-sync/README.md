@@ -8,6 +8,8 @@ Work in progress. Proofs so far:
 - [Stand-in ERP](proofs/01-stand-in-erp.md): 120 tables and 1.2M rows with undeclared composite keys, quoted key codes, and untrustworthy dates; a hand-kept key manifest; and the single wrapper that enforces the driver's text limit and hard timeout.
 - [Nightly correctness](proofs/02-nightly-correctness.md): the first load and seven nights of inserts, updates, untraceable deletes, and re-created keys. After every run, an independent audit compared every row of every table with the ERP: 960 of 960 table audits clean.
 - [Old process against new](proofs/03-old-versus-new.md): the old SSIS-style process, run against the same ERP on the same nights. After seven nights it had 9 tables wrong, 48,973 rows missing, and 17,872 duplicated keys, and had raised no errors.
+- [Failure and recovery](proofs/04-failure-and-recovery.md): injected timeouts recovered by nested retries; a table that fails for a night left untouched and caught up the next; a short pull stopped by the variance guard before it could mass-delete; a full wipe and reload.
+- [Hashing edge cases](proofs/05-hashing-edge-cases.md): six one-row changes that an obvious first-draft hash misses (NULL versus empty string, money's fourth decimal, float precision, datetime milliseconds, a pipe moving between columns, a change past 4,000 characters), all caught; plus quoted keys and a re-created key.
 
 ## Run it
 
@@ -20,5 +22,6 @@ Requires Docker (Docker Desktop or OrbStack). About three minutes from nothing t
 ./scripts/prove-erp.sh     # regenerate proofs/01-stand-in-erp.md
 ./scripts/sync.sh          # run one sync of every manifest table
 ./scripts/prove-nightly.sh 7  # rebuild the ERP; first load and 7 nights, new and old process, audit both (about an hour)
+./scripts/prove-resilience.sh # rebuild the ERP; failure, recovery, and edge-case scenarios (about 20 minutes)
 docker compose down        # stop and remove the instances
 ```

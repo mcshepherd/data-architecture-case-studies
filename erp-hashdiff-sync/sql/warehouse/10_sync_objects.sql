@@ -51,6 +51,22 @@ IF OBJECT_ID('sync.driver_log') IS NULL
     );
 GO
 
+-- Test scaffolding for the failure proofs: inert unless a row is armed.
+-- A failed INSERT ... EXEC rolls back everything the wrapper did, so a fault
+-- counter kept in a table would reset on every failure. Sequence values are
+-- not rolled back, so the count of matching calls lives in a sequence.
+IF OBJECT_ID('sync.fault_seq') IS NULL
+    CREATE SEQUENCE sync.fault_seq AS bigint START WITH 1;
+IF OBJECT_ID('sync.fault') IS NULL
+    CREATE TABLE sync.fault (
+        fault_id     int           IDENTITY PRIMARY KEY,
+        caller_like  nvarchar(200) NOT NULL,  -- LIKE pattern on the caller, e.g. N'%:pj_project'
+        sql_like     nvarchar(200) NOT NULL,  -- LIKE pattern on the statement, e.g. N'%JOIN (VALUES%'
+        fail_calls   int           NOT NULL,  -- fail this many matching calls, then let them through
+        seq_start    bigint        NOT NULL   -- sync.fault_seq value when armed
+    );
+GO
+
 -- The only way to run a statement on the ERP.
 --
 -- Stands in for the vendor driver behind the linked server:
@@ -62,6 +78,20 @@ GO
 --     restores that behavior.
 --
 -- Callers capture results with INSERT INTO ... EXEC sync.erp_exec_at @sql.
+-- Arm a fault: the next @fail_calls calls matching both patterns fail. One
+-- fault at a time: arming clears earlier ones, because they share the sequence
+-- and their callers would otherwise consume this fault's count.
+CREATE OR ALTER PROCEDURE sync.usp_arm_fault
+    @caller_like nvarchar(200), @sql_like nvarchar(200), @fail_calls int
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM sync.fault;
+    DECLARE @start bigint = NEXT VALUE FOR sync.fault_seq;
+    INSERT INTO sync.fault (caller_like, sql_like, fail_calls, seq_start) VALUES (@caller_like, @sql_like, @fail_calls, @start + 1);
+END;
+GO
+
 CREATE OR ALTER PROCEDURE sync.erp_exec_at
     @sql     nvarchar(max),
     @caller  nvarchar(200) = NULL
@@ -78,6 +108,20 @@ BEGIN
     BEGIN
         SET @msg = CONCAT(N'Statement is ', @chars, N' characters; the driver limit is ', @limit, N'.');
         THROW 50001, @msg, 1;
+    END;
+
+    -- Injected faults (tests only): fail as the driver would on a timeout.
+    DECLARE @fault int, @start bigint, @fails int, @n bigint;
+    SELECT TOP 1 @fault = fault_id, @start = seq_start, @fails = fail_calls FROM sync.fault
+    WHERE ISNULL(@caller, N'') LIKE caller_like AND @sql LIKE sql_like ORDER BY fault_id;
+    IF @fault IS NOT NULL
+    BEGIN
+        SET @n = NEXT VALUE FOR sync.fault_seq;
+        IF @n - @start < @fails
+        BEGIN
+            SET @msg = CONCAT(N'Query timeout expired (injected fault ', @fault, N', call ', @n - @start + 1, N' of ', @fails, N').');
+            THROW 50002, @msg, 1;
+        END;
     END;
 
     EXEC (@sql) AT ERP;

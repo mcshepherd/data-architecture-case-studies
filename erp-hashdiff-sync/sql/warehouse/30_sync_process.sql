@@ -453,9 +453,9 @@ BEGIN
             -- Running length of literals (each plus a comma). A batch closes before
             -- the running length passes the room left, and at the row cap.
             SET @sql = CONCAT(
-                N'WITH a AS (SELECT _batch, SUM(LEN(_key_literal) + 1) OVER (ORDER BY ', @order, N' ROWS UNBOUNDED PRECEDING) AS cum ',
+                N'WITH a AS (SELECT _batch, SUM(LEN(_key_literal) + 1) OVER (ORDER BY ', @order, N' ROWS UNBOUNDED PRECEDING) AS running_len ',
                 N'           FROM stage.', @hk, N' h), ',
-                N'b AS (SELECT _batch, (cum - 1) / (@room - @m) AS char_batch FROM a), ',
+                N'b AS (SELECT _batch, (running_len - 1) / (@room - @m) AS char_batch FROM a), ',
                 N'c AS (SELECT _batch, char_batch, ROW_NUMBER() OVER (PARTITION BY char_batch ORDER BY char_batch) AS rn FROM b), ',
                 N'd AS (SELECT _batch, DENSE_RANK() OVER (ORDER BY char_batch, (rn - 1) / @cap) AS nb FROM c) ',
                 N'UPDATE d SET _batch = nb; ',

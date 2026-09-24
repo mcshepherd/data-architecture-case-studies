@@ -1,0 +1,284 @@
+<title>Every Row, Every Night</title>
+<meta name="description" content="How a nightly ERP replica stays exact under a hard query timeout, a query-text limit, and no tombstones: the method, in the SQL it generates.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --ground:#f6f7f5; --ink:#1b2225; --muted:#5d696e; --rule:#d9dfdd;
+  --accent:#1f6b74; --accent-soft:#e2eeee; --mark:#a8502a;
+  --code-bg:#ecf0ee; --code-ink:#1f2a2d; --code-kw:#1f6b74; --code-str:#a8502a; --code-num:#6a4c93; --code-com:#7b878b;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --sans:"Source Sans 3","Helvetica Neue",Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#121618; --ink:#e3e7e8; --muted:#9aa5aa; --rule:#2a3236;
+    --accent:#6cc0c9; --accent-soft:#16292c; --mark:#e08a5f;
+    --code-bg:#1a2023; --code-ink:#dbe2e3; --code-kw:#6cc0c9; --code-str:#e08a5f; --code-num:#b79ce0; --code-com:#7f8b90;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#121618; --ink:#e3e7e8; --muted:#9aa5aa; --rule:#2a3236;
+  --accent:#6cc0c9; --accent-soft:#16292c; --mark:#e08a5f;
+  --code-bg:#1a2023; --code-ink:#dbe2e3; --code-kw:#6cc0c9; --code-str:#e08a5f; --code-num:#b79ce0; --code-com:#7f8b90;
+}
+
+body{background:var(--ground);color:var(--ink);font-family:var(--serif);font-size:17px;line-height:1.62;margin:0;padding-inline:16px;padding-block:48px 80px;}
+.essay{max-width:43rem;margin:0 auto;}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px;}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+header{margin-bottom:2.25rem;}
+.eyebrow{font-family:var(--sans);font-size:.8rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 .6rem;}
+h1{font-family:var(--sans);font-weight:700;font-size:2.4rem;line-height:1.1;letter-spacing:-.01em;margin:0 0 .75rem;text-wrap:balance;}
+.dek{font-size:1.2rem;line-height:1.45;color:var(--muted);margin:0 0 1rem;text-wrap:balance;}
+.byline{font-family:var(--sans);font-size:.9rem;color:var(--muted);margin:0;}
+
+h2{font-family:var(--sans);font-weight:700;font-size:1.35rem;line-height:1.25;margin:2.6rem 0 .7rem;text-wrap:balance;}
+h2 .step{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:.35em;}
+h3{font-family:var(--sans);font-weight:600;font-size:1.05rem;margin:1.6rem 0 .4rem;}
+p{margin:0 0 1rem;}
+ul.plain{padding-left:1.1rem;margin:0 0 1rem;}
+ul.plain li{margin:0 0 .45rem;}
+strong{font-weight:600;}
+code{font-family:var(--mono);font-size:.84em;background:var(--code-bg);color:var(--code-ink);padding:.08em .32em;border-radius:3px;}
+
+/* The seven steps: a real sequence, so it is numbered. */
+.flow{list-style:none;padding:0;margin:1.4rem 0 1.8rem;display:flex;flex-wrap:wrap;gap:.5rem;counter-reset:step;}
+.flow li{counter-increment:step;flex:1 1 7.5rem;font-family:var(--sans);font-size:.88rem;line-height:1.3;
+  border-top:3px solid var(--accent);background:var(--accent-soft);padding:.55rem .65rem .6rem;}
+.flow li::before{content:counter(step);display:block;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+.flow b{display:block;font-weight:600;color:var(--ink);}
+.flow span{color:var(--muted);}
+
+figure{margin:1.2rem 0 1.5rem;}
+figcaption{font-family:var(--sans);font-size:.85rem;line-height:1.45;color:var(--muted);margin-top:.5rem;}
+pre{margin:0;background:var(--code-bg);color:var(--code-ink);border-radius:4px;padding:.9rem 1rem;overflow-x:auto;
+  font-family:var(--mono);font-size:.78rem;line-height:1.55;tab-size:4;}
+pre code{background:none;padding:0;font-size:inherit;}
+.hljs-keyword,.hljs-operator{color:var(--code-kw);font-weight:600;}
+.hljs-string{color:var(--code-str);}
+.hljs-number{color:var(--code-num);}
+.hljs-comment{color:var(--code-com);font-style:italic;}
+.hljs-built_in,.hljs-type{color:var(--code-kw);}
+.email{white-space:pre-wrap;font-size:.8rem;}
+
+.table-wrap{overflow-x:auto;margin:1rem 0 1.4rem;}
+table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:.88rem;line-height:1.4;}
+th,td{text-align:left;padding:.45rem .6rem .45rem 0;border-bottom:1px solid var(--rule);vertical-align:top;}
+th{font-weight:600;color:var(--muted);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;}
+td.miss{color:var(--mark);font-weight:600;}
+td.ok{color:var(--accent);font-weight:600;}
+
+.results{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:1rem;margin:1.2rem 0 1.6rem;padding:1rem 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);}
+.results div{font-family:var(--sans);font-size:.86rem;line-height:1.35;color:var(--muted);}
+.results b{display:block;font-size:1.55rem;line-height:1.15;color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums;margin-bottom:.2rem;}
+
+footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--rule);font-family:var(--sans);font-size:.85rem;color:var(--muted);}
+
+@media (max-width:520px){ body{font-size:16px;padding-block:28px 56px;} h1{font-size:1.9rem;} }
+@media print{
+  :root{font-size:9pt;}
+  body{font-size:9.5pt;line-height:1.5;padding:0;background:#fff;}
+  .flow{display:grid;grid-template-columns:repeat(7,1fr);gap:.35rem;}
+  .flow li{padding:.45rem .5rem;}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .essay{max-width:none;}
+  header{margin-bottom:1.4rem;}
+  h1{font-size:2.3rem;}
+  h2{margin:1.7rem 0 .5rem;}
+  pre,pre.email{white-space:pre-wrap;word-break:break-word;overflow:visible;font-size:7.4pt;line-height:1.45;padding:.6rem .75rem;}
+  figure{margin:.8rem 0 1rem;}
+  .flow,.results,figcaption{break-inside:avoid;}
+  figure{break-inside:auto;}
+  pre.email{break-inside:avoid;}
+  h2,h3{break-after:avoid;}
+  tr{break-inside:avoid;}
+  a{color:var(--ink);text-decoration:none;}
+}
+</style>
+
+<article class="essay">
+<header>
+  <p class="eyebrow">Method essay · erp-hashdiff-sync</p>
+  <h1>Every Row, Every Night</h1>
+  <p class="dek">How a nightly replica of a vendor ERP stays exact under a hard query timeout, a query-text limit, and no tombstones: the method, shown in the SQL it generates.</p>
+  <p class="byline">Colby Shepherd</p>
+</header>
+
+<p>I designed and ran a nightly sync that kept a warehouse copy of a vendor ERP exact: roughly 700 tables and 2 billion rows, reconciled every night. The client's code stays with the client, so I rebuilt the method from scratch against a generated stand-in ERP, in the same T-SQL, over a real SQL Server linked server. The generated statements below are real output from that rebuild; the few code excerpts are marked where abridged.</p>
+
+<h2>The constraints decide the design</h2>
+<p>The ERP was reachable only through a linked server backed by the vendor's proprietary driver. Six facts shaped everything that follows:</p>
+<ul class="plain">
+  <li><strong>A 15-minute hard timeout</strong> on every query.</li>
+  <li><strong>A limit on query-text length</strong>, which caps how much any one statement can say.</li>
+  <li><strong>Read-only access.</strong> No staging tables, temp tables, or views on the vendor's side.</li>
+  <li><strong>No tombstones.</strong> A deleted row simply disappears.</li>
+  <li><strong>Create and modify dates that cannot be trusted</strong>: sometimes missing, sometimes not updated when a row changes.</li>
+  <li><strong>Undeclared keys.</strong> The real keys are composite, an int plus codes and sometimes a date, and live only in the vendor's data dictionary.</li>
+</ul>
+<p>Untrustworthy dates rule out filtering for recent changes, and missing tombstones rule out asking for deletes. What remains is comparing every row, every night, and making that cheap.</p>
+
+<h2>One path for every table</h2>
+<p>Each table runs as its own procedure, started in parallel. The first load, a nightly run, and a full rebuild all take the same seven steps, and every statement sent to the ERP is generated from two things: a copy of the ERP's column metadata, and a hand-kept manifest of each table's key columns.</p>
+<ol class="flow" aria-label="The seven steps">
+  <li><b>Pull</b><span>every key and a row hash</span></li>
+  <li><b>Guard</b><span>against a short pull</span></li>
+  <li><b>Compare</b><span>new, changed, deleted</span></li>
+  <li><b>Prune</b><span>to a request list</span></li>
+  <li><b>Fetch</b><span>keys sent in the query text</span></li>
+  <li><b>Apply</b><span>in one transaction</span></li>
+  <li><b>Reconcile</b><span>every count, or roll back</span></li>
+</ol>
+
+<h2><span class="step">1</span>Pull every key and a hash of its whole row</h2>
+<p>One query per table returns each key and an MD5 of the entire row, computed on the ERP's side, so only keys and 32-character hashes cross the wire. In production this single pull finished inside the timeout even at 500 million rows. For a thirteen-column table it looks like this, reformatted from the one line actually sent:</p>
+<figure>
+<pre><code class="language-sql">DECLARE @d varchar(3) = '$|$', @n char(1) = CHAR(0), @m varchar(max) = '';
+SELECT [dunning_id], [dunning_code], [line_code],
+       CONVERT(char(32), HASHBYTES('MD5', CONCAT(@m, CONCAT(@m,
+           @d, ISNULL(CONVERT(varchar(20), [dunning_id]), @n),
+           @d, ISNULL([dunning_code], @n),
+           @d, ISNULL([line_code], @n),
+           @d, ISNULL(CONVERT(varchar(27), [created_on], 121), @n),
+           @d, ISNULL(CONVERT(varchar(27), [modified_on], 121), @n),
+           @d, ISNULL(CONVERT(varchar(40), [hours_001]), @n),
+           @d, ISNULL([label_002], @n),
+           @d, ISNULL(CONVERT(varchar(20), [ext_id_003]), @n),
+           @d, ISNULL(CONVERT(varchar(20), [closed_004]), @n),
+           @d, ISNULL(CONVERT(varchar(40), [rate_005]), @n),
+           @d, ISNULL(CONVERT(char(10), [start_date_006], 23), @n),
+           @d, ISNULL([note_007], @n),
+           @d, ISNULL(CONVERT(varchar(40), [balance_008]), @n)))), 2)
+FROM dbo.[ar_dunning]</code></pre>
+<figcaption>742 characters for thirteen columns. The widest stand-in table, 318 columns, needs about 12,300 for the same statement.</figcaption>
+</figure>
+<p>Every detail in that statement is there to make the hash honest:</p>
+<ul class="plain">
+  <li><strong>Each type gets its own cast.</strong> Default conversions round money to two decimals, cut float to six significant digits, and drop datetime's seconds. The generator picks a style that keeps full precision: 2 for money, 3 for float, 121 for datetime, 23 for date.</li>
+  <li><strong>NULL becomes <code>CHAR(0)</code></strong>, a character no text value contains, so NULL and an empty string hash differently.</li>
+  <li><strong>The delimiter is <code>$|$</code></strong>, not a single pipe, so a pipe moving from one value to its neighbor cannot produce the same string.</li>
+  <li><strong>Every <code>CONCAT</code> starts from <code>@m</code>, a <code>varchar(max)</code>.</strong> Without a large-object argument, SQL Server silently truncates the result at 8,000 characters, or 4,000 once an <code>nvarchar</code> column joins in, and a change past that point never reaches the hash. I hit this in production; the rebuild hit it again independently. <code>CONCAT</code> takes at most 254 arguments, so wide tables nest one per 126 columns.</li>
+</ul>
+<p>The ERP's hash is stored on each replica row, and the next night compares against it. The warehouse never reproduces the ERP's casting, so the two sides never hash the same row differently.</p>
+
+<h2><span class="step">2–4</span>Guard, compare, prune</h2>
+<p>A short pull looks exactly like mass deletion, so before comparing anything the procedure checks the count. The replica may shrink by deletes, but only so far:</p>
+<figure>
+<pre><code class="language-sql">IF @wipe = 0 AND @active_before > 0 AND @pulled < @active_before * (1 - @allowance)
+    THROW 50010, @msg, 1;  -- logged, alerted, and not retried</code></pre>
+</figure>
+<p>Then one pass over the pulled hashes classifies every key. A key the replica lacks is new; a key whose hash differs, or that was deleted and has come back, is changed; a key active in the replica but absent from the pull was deleted in the ERP. Unchanged keys are dropped, and what remains is the request list.</p>
+<figure>
+<pre><code class="language-sql">UPDATE h SET _action = CASE WHEN t.[dunning_id] IS NULL THEN 'N'
+                            WHEN t._is_deleted = 1 OR t._row_hash <> h._row_hash THEN 'C' END
+FROM stage.[ar_dunning__hashkey] h
+LEFT JOIN replica.[ar_dunning] t
+  ON h.[dunning_id] = t.[dunning_id] AND h.[dunning_code] = t.[dunning_code] AND h.[line_code] = t.[line_code];
+
+INSERT INTO stage.[ar_dunning__deleted] ([dunning_id], [dunning_code], [line_code])
+SELECT t.[dunning_id], t.[dunning_code], t.[line_code]
+FROM replica.[ar_dunning] t
+WHERE t._is_deleted = 0
+  AND NOT EXISTS (SELECT 1 FROM stage.[ar_dunning__hashkey] h
+                  WHERE h.[dunning_id] = t.[dunning_id] AND h.[dunning_code] = t.[dunning_code]
+                    AND h.[line_code] = t.[line_code]);</code></pre>
+<figcaption>Deletes are found by absence: the only way to see one when the source leaves no trace.</figcaption>
+</figure>
+
+<h2><span class="step">5</span>Send the keys back inside the query text</h2>
+<p>Nothing can be created on the ERP, so there is nowhere to put a list of keys except the statement itself. Each requested key becomes a literal tuple in a <code>VALUES</code> list, joined on every key column:</p>
+<figure>
+<pre><code class="language-sql">SELECT s.[dunning_id], s.[dunning_code], s.[line_code], s.[created_on], s.[modified_on],
+       s.[hours_001], s.[label_002], s.[ext_id_003], s.[closed_004], s.[rate_005],
+       s.[start_date_006], s.[note_007], s.[balance_008]
+FROM dbo.[ar_dunning] s
+JOIN (VALUES (1,'C''3','L002'),
+             (1,'C''3','L001'),
+             (1,'C''3','L000')) v([dunning_id], [dunning_code], [line_code])
+  ON s.[dunning_id] = v.[dunning_id]
+ AND s.[dunning_code] = v.[dunning_code]
+ AND s.[line_code] = v.[line_code]</code></pre>
+<figcaption>Three keys shown; a real batch holds hundreds. The code <code>C'3</code> goes in as <code>'C''3'</code>. Unescaped, the first quoted code would end the string and break the batch.</figcaption>
+</figure>
+<p>The batch size is arithmetic on the statement. The select list is the same for every batch of a table, so what remains of the text limit is the room for keys. A running sum of literal lengths closes each batch before it would overflow, with a cap of 5,000 rows:</p>
+<figure>
+<pre><code class="language-sql">WITH a AS (SELECT _batch, SUM(LEN(_key_literal) + 1)
+                  OVER (ORDER BY [dunning_id], [dunning_code], [line_code] ROWS UNBOUNDED PRECEDING) AS running_len
+           FROM stage.[ar_dunning__hashkey]),
+     b AS (SELECT _batch, (running_len - 1) / (@room - @longest_literal) AS char_batch FROM a),
+     c AS (SELECT _batch, char_batch, ROW_NUMBER() OVER (PARTITION BY char_batch ORDER BY char_batch) AS rn FROM b),
+     d AS (SELECT _batch, DENSE_RANK() OVER (ORDER BY char_batch, (rn - 1) / @row_cap) AS nb FROM c)
+UPDATE d SET _batch = nb;</code></pre>
+<figcaption>From the procedure, with variables renamed for reading. On the first load, batches landed at up to 14,998 characters against a 15,000 limit. A 318-column table fits about 830 keys per batch; a narrow one about 1,200.</figcaption>
+</figure>
+
+<h2><span class="step">6–7</span>Apply everything at once, then prove the counts</h2>
+<p>Fetched rows land in staging. Nothing touches the replica until every batch is in; then one transaction flags the deletes, removes the changed rows, and inserts the fetched ones, each stamped with its load time and the hash from the pull. Before it commits, every count must reconcile, and the replica must hold exactly the keys that were pulled:</p>
+<figure>
+<pre><code class="language-sql">BEGIN TRAN;
+  UPDATE t SET _is_deleted = 1 FROM replica.[ar_dunning] t JOIN stage.[ar_dunning__deleted] d ON …;
+  DELETE t FROM replica.[ar_dunning] t JOIN stage.[ar_dunning__hashkey] h ON … WHERE h._action = 'C';
+  INSERT INTO replica.[ar_dunning] (/* 13 columns */, _row_hash, _loaded_at, _is_deleted)
+  SELECT /* 13 columns */, h._row_hash, @run_at, 0
+  FROM stage.[ar_dunning__rows] r JOIN stage.[ar_dunning__hashkey] h ON …;
+
+  IF @flagged <> @deleted OR @removed <> @changed OR @inserted <> @requested OR @active_after <> @pulled
+      THROW 50013, @msg, 1;  -- rolls back: the table stays exactly as it was
+COMMIT;</code></pre>
+<figcaption>Abridged: the join conditions are the same three-column key match as above.</figcaption>
+</figure>
+<p>That makes failure cheap. Retries are nested, three per batch inside the procedure and three per table in the runner, and a failed <code>INSERT … EXEC</code> inserts nothing, so a retry never duplicates a row. A table that fails every attempt is left exactly as it was the night before, and the next run picks up everything it missed. The one email per bad run, sent the way the original's SSIS Send Mail task did, says so:</p>
+<figure>
+<pre class="email"><code>Run 7 (2026-01-07 02:00:00): 119 tables succeeded, 1 did not.
+
+pj_project: stopped by the variance guard after 1 attempt.
+  Error 50010: Variance guard: pulled 129344 keys, replica has 136002 active rows, allowance 1.0 percent.
+  Not retried. The replica was left untouched. Check the source before the next run.</code></pre>
+<figcaption>From the failure proof: 5% of a table vanished from the ERP, as in a partial restore. Without the guard, those rows would have been flagged deleted.</figcaption>
+</figure>
+
+<h2>The details that decide correctness</h2>
+<p>Each row below is a one-row change made in the stand-in ERP. An obvious first-draft hash (default conversions, NULL as an empty string, a single pipe, no <code>varchar(max)</code>) does not notice any of them. The sync catches every one.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Change</th><th>Before → after</th><th>First-draft hash</th><th>This sync</th></tr></thead>
+  <tbody>
+    <tr><td>NULL becomes an empty string</td><td><code>NULL</code> → <code>''</code></td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+    <tr><td>money, fourth decimal</td><td>27563.3800 → 27563.3801</td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+    <tr><td>float, 13th significant digit</td><td>1.7917896271428570e+8 → 1.7917896271446490e+8</td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+    <tr><td>datetime, 10 milliseconds</td><td>04:37:28.047 → 04:37:28.057</td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+    <tr><td>a pipe moves between neighbors</td><td><code>'ab'</code>,<code>'|cd'</code> → <code>'ab|'</code>,<code>'cd'</code></td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+    <tr><td>a change past the 4,000th character</td><td>…xxx → …xxy</td><td class="miss">misses it</td><td class="ok">changed</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Proving it without the client's system</h2>
+<p>The stand-in is generated in T-SQL from a seed: 120 tables and 1.2 million rows with undeclared composite keys, quoted codes, untrustworthy dates, and tables up to 318 columns, plus nightly activity that inserts, updates, deletes without a trace, and re-creates deleted keys. The timeout and the read-only login are real, enforced by SQL Server; the text limit is the one constraint simulated, in the single procedure every ERP call passes through.</p>
+<p>After every run, an independent audit compares every row of every table with the ERP. It reads the ERP through its own linked server and fingerprints rows with SQL Server's JSON rendering and SHA-256, so a bug in the sync's hashing cannot hide from it. The old process ran beside the new one on the same nights, rebuilt as it was: most tables reloaded in full, the large ones filtered by date and upserted on part of their key.</p>
+<div class="results">
+  <div><b>960 of 960</b>table audits clean over the first load and seven nights</div>
+  <div><b>1,884 rows</b>fetched on night 7, after comparing all 1,227,989 keys</div>
+  <div><b>71,355 rows</b>wrong in the old process's copy after seven nights, with no errors raised</div>
+</div>
+
+<h2>What I would do differently</h2>
+<ul class="plain">
+  <li><strong>Close the gap between the pull and the fetch.</strong> The stored hash comes from the pull and the values from the fetch. A row that changes in between, then changes back before the next pull, keeps the in-between values. I never saw transactions land at that hour, but it is possible; fetching each row's hash with its values would close it.</li>
+  <li><strong>Retry only what a retry can fix.</strong> Every failure is retried, including errors that can never succeed on retry.</li>
+  <li><strong>Handle schema changes in place.</strong> A vendor change to a table's columns stops that table, by name, until it is rebuilt from scratch. Adding the column and refetching that one table would keep it running.</li>
+</ul>
+
+<footer>
+  <p>The code, the stand-in, and every proof are in <a href="https://github.com/mcshepherd/data-architecture-case-studies/tree/main/erp-hashdiff-sync">data-architecture-case-studies / erp-hashdiff-sync</a>. The statements above come from its T-SQL: <a href="https://github.com/mcshepherd/data-architecture-case-studies/blob/main/erp-hashdiff-sync/sql/warehouse/30_sync_process.sql">sql/warehouse/30_sync_process.sql</a>.</p>
+</footer>
+</article>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+  if (window.hljs) { document.querySelectorAll('pre code.language-sql').forEach(function (el) { hljs.highlightElement(el); }); }
+</script>

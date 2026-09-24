@@ -120,7 +120,8 @@ GO
 -- marker no text value contains. @d and @n are declared at the top of the
 -- statement sent to the ERP.
 -- Each type needs its own cast: the default conversions round money to two
--- places, drop float precision, and drop datetime milliseconds.
+-- places, drop float precision, and drop datetime milliseconds. A type not
+-- listed returns NULL, and the sync refuses the table rather than guess.
 CREATE OR ALTER FUNCTION sync.fn_hash_piece (@column_name sysname, @data_type sysname)
 RETURNS nvarchar(400)
 AS
@@ -135,13 +136,18 @@ BEGIN
         WHEN @data_type = N'date' THEN CONCAT(N'CONVERT(char(10),', @c, N',23)')
         WHEN @data_type IN (N'datetime', N'smalldatetime', N'datetime2') THEN CONCAT(N'CONVERT(varchar(27),', @c, N',121)')
         WHEN @data_type = N'uniqueidentifier' THEN CONCAT(N'CONVERT(char(36),', @c, N')')
+        WHEN @data_type = N'time' THEN CONCAT(N'CONVERT(varchar(16),', @c, N')')
+        WHEN @data_type = N'datetimeoffset' THEN CONCAT(N'CONVERT(varchar(34),', @c, N',127)')
+        WHEN @data_type IN (N'binary', N'varbinary') THEN CONCAT(N'CONVERT(varchar(max),', @c, N',1)')
     END;
-    RETURN CONCAT(N'@d,ISNULL(', @text, N',@n)');
+    -- NULL for a type with no cast here; the sync refuses such a table by name.
+    RETURN IIF(@text IS NULL, NULL, CONCAT(N'@d,ISNULL(', @text, N',@n)'));
 END;
 GO
 
 -- A key value as a SQL literal for the VALUES list, from stage alias h.
 -- Quotes inside codes are doubled; without this, one quoted code breaks the batch.
+-- NULL for a type with no literal form here; the sync refuses such a key.
 CREATE OR ALTER FUNCTION sync.fn_literal_sql (@column_name sysname, @data_type sysname)
 RETURNS nvarchar(400)
 AS
@@ -154,10 +160,60 @@ BEGIN
             THEN CONCAT(N'CONCAT(CHAR(39),REPLACE(', @c, N',CHAR(39),CHAR(39)+CHAR(39)),CHAR(39))')
         WHEN @data_type IN (N'nvarchar', N'nchar')
             THEN CONCAT(N'CONCAT(N''N'',NCHAR(39),REPLACE(', @c, N',NCHAR(39),NCHAR(39)+NCHAR(39)),NCHAR(39))')
+        WHEN @data_type IN (N'money', N'smallmoney') THEN CONCAT(N'CONVERT(varchar(40),', @c, N',2)')
+        WHEN @data_type IN (N'float', N'real') THEN CONCAT(N'CONVERT(varchar(30),', @c, N',3)')
         WHEN @data_type = N'date' THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(char(10),', @c, N',23),CHAR(39))')
-        WHEN @data_type IN (N'datetime', N'datetime2') THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(varchar(27),', @c, N',121),CHAR(39))')
+        WHEN @data_type IN (N'datetime', N'smalldatetime', N'datetime2')
+            THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(varchar(27),', @c, N',121),CHAR(39))')
+        WHEN @data_type = N'time' THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(varchar(16),', @c, N'),CHAR(39))')
+        WHEN @data_type = N'datetimeoffset' THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(varchar(34),', @c, N',127),CHAR(39))')
+        WHEN @data_type = N'uniqueidentifier' THEN CONCAT(N'CONCAT(CHAR(39),CONVERT(char(36),', @c, N'),CHAR(39))')
     END;
 END;
+GO
+
+-- The tables a run set out to sync, so a table that never started still counts.
+IF OBJECT_ID('sync.run_plan') IS NULL
+    CREATE TABLE sync.run_plan (
+        run_id      int     NOT NULL,
+        table_name  sysname NOT NULL,
+        PRIMARY KEY (run_id, table_name)
+    );
+GO
+
+CREATE OR ALTER PROCEDURE sync.usp_plan_run
+    @run_id int, @tables nvarchar(max)  -- comma-separated
+AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT INTO sync.run_plan (run_id, table_name)
+    SELECT DISTINCT @run_id, TRIM(value) FROM STRING_SPLIT(@tables, N',') WHERE TRIM(value) <> N'';
+END;
+GO
+
+-- Each table's outcome in a run: its last attempt. The one definition the
+-- runner's summary, its exit code, and the alert all use.
+--   succeeded / failed / variance  as logged
+--   interrupted                    the last attempt never finished (its session ended)
+--   not started                    planned, but no attempt was ever logged
+CREATE OR ALTER FUNCTION sync.fn_run_outcome (@run_id int)
+RETURNS TABLE
+AS
+RETURN
+    WITH t AS (
+        SELECT table_name FROM sync.run_plan WHERE run_id = @run_id
+        UNION
+        SELECT table_name FROM sync.run_table_log WHERE run_id = @run_id),
+    l AS (
+        SELECT table_name, status, message,
+               ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY log_id DESC) AS rn,
+               COUNT(*) OVER (PARTITION BY table_name) AS attempts
+        FROM sync.run_table_log WHERE run_id = @run_id)
+    SELECT t.table_name,
+           CASE WHEN l.status IS NULL THEN 'not started' WHEN l.status = 'running' THEN 'interrupted' ELSE l.status END AS status,
+           ISNULL(l.attempts, 0) AS attempts,
+           l.message
+    FROM t LEFT JOIN l ON l.table_name = t.table_name AND l.rn = 1;
 GO
 
 CREATE OR ALTER PROCEDURE sync.usp_start_run
@@ -196,7 +252,14 @@ BEGIN
             @batches int = 0, @max_batch_keys int = 0, @fetched int = 0, @retries int = 0,
             @flagged int = 0, @removed int = 0, @inserted int = 0, @active_after int;
 
+    DECLARE @lock nvarchar(255) = CONCAT(N'sync:', @table_name), @lock_rc int;
+
     BEGIN TRY
+        -- One sync of a table at a time: staging tables are per table.
+        EXEC @lock_rc = sp_getapplock @Resource = @lock, @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0;
+        IF @lock_rc < 0
+            THROW 50024, 'Another sync of this table is already running.', 1;
+
         IF @key_columns IS NULL
             THROW 50020, 'Table is not in the manifest.', 1;
         IF NOT EXISTS (SELECT 1 FROM sync.source_columns WHERE table_name = @table_name)
@@ -211,6 +274,19 @@ BEGIN
         LEFT JOIN sync.source_columns c ON c.table_name = @table_name AND c.column_name = TRIM(k.value);
         IF EXISTS (SELECT 1 FROM @keys WHERE data_type IS NULL)
             THROW 50022, 'A manifest key column does not exist in the metadata.', 1;
+
+        -- Refuse types this sync has no cast for, by name, rather than send malformed SQL.
+        DECLARE @unsupported nvarchar(2000) = (
+            SELECT STRING_AGG(CONCAT(column_name, N' (', data_type, N')'), N', ') FROM (
+                SELECT column_name, data_type FROM sync.source_columns
+                WHERE table_name = @table_name AND sync.fn_hash_piece(column_name, data_type) IS NULL
+                UNION
+                SELECT column_name, data_type FROM @keys WHERE sync.fn_literal_sql(column_name, data_type) IS NULL) x);
+        IF @unsupported IS NOT NULL
+        BEGIN
+            SET @msg = CONCAT(N'Unsupported column types: ', @unsupported, N'.');
+            THROW 50025, @msg, 1;
+        END;
 
         -- Generated fragments.
         DECLARE @t nvarchar(300) = QUOTENAME(@table_name);
@@ -272,17 +348,41 @@ BEGIN
                               N'CREATE CLUSTERED INDEX cx ON replica.', @t, N' (', @key_list, N');');
             EXEC (@sql);
         END;
-        IF @wipe = 1
+        ELSE
         BEGIN
-            SET @sql = CONCAT(N'TRUNCATE TABLE replica.', @t);
-            EXEC (@sql);
+            -- Schema drift: the replica must match the ERP's columns exactly. A
+            -- vendor update that adds, drops, or retypes a column stops the table
+            -- here, by name. The fix is to rebuild: drop the replica table, and the
+            -- next run reloads it from scratch.
+            DECLARE @drift nvarchar(2000);
+            WITH src AS (
+                SELECT column_name, sync.fn_type_sql(data_type, char_length, num_precision, num_scale, dt_precision) AS type_sql
+                FROM sync.source_columns WHERE table_name = @table_name),
+            rep AS (
+                SELECT COLUMN_NAME AS column_name,
+                       sync.fn_type_sql(DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION) AS type_sql
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = N'replica' AND TABLE_NAME = @table_name
+                  AND COLUMN_NAME NOT IN (N'_row_hash', N'_loaded_at', N'_is_deleted'))
+            SELECT @drift = STRING_AGG(CAST(CONCAT(COALESCE(src.column_name, rep.column_name), N' ', CASE
+                    WHEN rep.column_name IS NULL THEN N'added in the ERP'
+                    WHEN src.column_name IS NULL THEN N'dropped from the ERP'
+                    ELSE CONCAT(N'changed from ', rep.type_sql, N' to ', src.type_sql) END) AS nvarchar(max)), N'; ')
+            FROM src FULL JOIN rep ON rep.column_name = src.column_name
+            WHERE src.column_name IS NULL OR rep.column_name IS NULL OR src.type_sql <> rep.type_sql;
+            IF @drift IS NOT NULL
+            BEGIN
+                SET @msg = LEFT(CONCAT(N'Schema drift: ', @drift, N'. Rebuild: drop replica.', @t,
+                                       N' and the next run reloads it.'), 2000);
+                THROW 50023, @msg, 1;
+            END;
         END;
 
         -- Fresh staging tables.
         SET @sql = CONCAT(
             N'DROP TABLE IF EXISTS stage.', @hk, N'; DROP TABLE IF EXISTS stage.', @del, N'; DROP TABLE IF EXISTS stage.', @rows, N'; ',
             N'CREATE TABLE stage.', @hk, N' (', @key_defs, N', _row_hash char(32) NOT NULL, _action char(1) NULL, ',
-            N'_key_literal varchar(1000) NULL, _batch int NULL); ',
+            N'_key_literal nvarchar(max) NULL, _batch int NULL); ',
             N'CREATE CLUSTERED INDEX cx ON stage.', @hk, N' (', @key_list, N'); ',
             N'CREATE TABLE stage.', @del, N' (', @key_defs, N'); ',
             N'CREATE TABLE stage.', @rows, N' (', @col_defs, N'); ');
@@ -307,6 +407,12 @@ BEGIN
 
         -- 3. Compare. New: not in the replica. Changed: hash differs, or the key was
         --    deleted before and has come back. Deleted: active in the replica, not pulled.
+        --    A wipe treats every pulled key as new; the old rows go in step 6.
+        IF @wipe = 1
+            SET @sql = CONCAT(
+                N'UPDATE stage.', @hk, N' SET _action = ''N''; ',
+                N'SELECT @new = COUNT(*), @changed = 0 FROM stage.', @hk, N'; SET @deleted = 0;');
+        ELSE
         SET @sql = CONCAT(
             N'UPDATE h SET _action = CASE WHEN t.', @first_key, N' IS NULL THEN ''N'' ',
             N'WHEN t._is_deleted = 1 OR t._row_hash <> h._row_hash THEN ''C'' END ',
@@ -338,7 +444,7 @@ BEGIN
                               N'SELECT @m = MAX(LEN(_key_literal)) FROM stage.', @hk, N';');
             EXEC sp_executesql @sql, N'@m int OUTPUT', @max_literal OUTPUT;
             SET @room = @limit - @fixed;
-            IF @room < @max_literal
+            IF @room <= @max_literal
             BEGIN
                 SET @msg = CONCAT(N'The fixed statement text is ', @fixed, N' characters; no room for keys under ', @limit, N'.');
                 THROW 50011, @msg, 1;
@@ -394,10 +500,14 @@ BEGIN
         END;
 
         -- 6. Apply everything in one transaction. The stored hash is the ERP's own,
-        --    from the pull, so the next night compares like with like.
+        --    from the pull, so the next night compares like with like. A wipe
+        --    empties the replica here, inside the transaction, so a wipe that fails
+        --    anywhere earlier leaves the old rows in place.
         SET @sql = CONCAT(
-            N'UPDATE t SET _is_deleted = 1 FROM replica.', @t, N' t JOIN stage.', @del, N' d ON ', @on_td, N'; SET @f = @@ROWCOUNT; ',
-            N'DELETE t FROM replica.', @t, N' t JOIN stage.', @hk, N' h ON ', @on_ht, N' WHERE h._action = ''C''; SET @r = @@ROWCOUNT; ',
+            IIF(@wipe = 1,
+                CONCAT(N'SET @f = 0; DELETE FROM replica.', @t, N'; SET @r = @@ROWCOUNT; '),
+                CONCAT(N'UPDATE t SET _is_deleted = 1 FROM replica.', @t, N' t JOIN stage.', @del, N' d ON ', @on_td, N'; SET @f = @@ROWCOUNT; ',
+                       N'DELETE t FROM replica.', @t, N' t JOIN stage.', @hk, N' h ON ', @on_ht, N' WHERE h._action = ''C''; SET @r = @@ROWCOUNT; ')),
             N'INSERT INTO replica.', @t, N' (', @col_list, N', _row_hash, _loaded_at, _is_deleted) ',
             N'SELECT ', @r_col_list, N', h._row_hash, @run_at, 0 FROM stage.', @rows, N' r JOIN stage.', @hk, N' h ON ', @on_hr, N'; ',
             N'SET @i = @@ROWCOUNT; ',
@@ -408,7 +518,7 @@ BEGIN
              @run_at, @flagged OUTPUT, @removed OUTPUT, @inserted OUTPUT, @active_after OUTPUT;
         -- 7. Validate before committing: every count must reconcile, and the
         --    replica must now hold exactly the keys that were pulled.
-        IF @flagged <> @deleted OR @removed <> @changed OR @inserted <> @requested OR @active_after <> @pulled
+        IF @flagged <> @deleted OR (@wipe = 0 AND @removed <> @changed) OR @inserted <> @requested OR @active_after <> @pulled
         BEGIN
             SET @msg = CONCAT(N'Counts do not reconcile: deleted ', @deleted, N'/', @flagged, N', changed ', @changed, N'/', @removed,
                               N', requested ', @requested, N'/', @inserted, N', pulled ', @pulled, N'/active ', @active_after, N'.');
@@ -431,9 +541,12 @@ BEGIN
             SET @sql = CONCAT(N'DROP TABLE stage.', @hk, N'; DROP TABLE stage.', @del, N'; DROP TABLE stage.', @rows, N';');
             EXEC (@sql);
         END;
+        EXEC sp_releaseapplock @Resource = @lock, @LockOwner = 'Session';
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
+        IF APPLOCK_MODE(N'public', @lock, N'Session') <> N'NoLock'
+            EXEC sp_releaseapplock @Resource = @lock, @LockOwner = 'Session';
         UPDATE sync.run_table_log
         SET status = IIF(ERROR_NUMBER() = 50010, 'variance', 'failed'), finished_at = SYSDATETIME(),
             pulled_keys = @pulled, active_before = @active_before, new_keys = @new, changed_keys = @changed,
@@ -455,7 +568,10 @@ BEGIN
         FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name IN (N'replica', N'stage'));
     IF @sql IS NOT NULL EXEC (@sql);
     TRUNCATE TABLE sync.run;
+    TRUNCATE TABLE sync.run_plan;
     TRUNCATE TABLE sync.run_table_log;
     TRUNCATE TABLE sync.driver_log;
+    DELETE FROM sync.fault;
+    IF OBJECT_ID(N'sync.alert') IS NOT NULL TRUNCATE TABLE sync.alert;
 END;
 GO

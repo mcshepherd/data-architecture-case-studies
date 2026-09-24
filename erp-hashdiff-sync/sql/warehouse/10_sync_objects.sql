@@ -49,6 +49,8 @@ IF OBJECT_ID('sync.driver_log') IS NULL
         sql_chars    int           NOT NULL,
         caller       nvarchar(200) NULL
     );
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_driver_log_caller' AND object_id = OBJECT_ID('sync.driver_log'))
+    CREATE INDEX ix_driver_log_caller ON sync.driver_log (caller);
 GO
 
 -- Test scaffolding for the failure proofs: inert unless a row is armed.
@@ -67,17 +69,6 @@ IF OBJECT_ID('sync.fault') IS NULL
     );
 GO
 
--- The only way to run a statement on the ERP.
---
--- Stands in for the vendor driver behind the linked server:
---   * rejects any statement longer than the text limit, before sending it;
---   * raises a hard error when a statement runs to the linked server's query
---     timeout. Microsoft's provider reports a timeout only as an informational
---     message and returns no rows, with no error to catch (see
---     proofs/00-infrastructure.md). The vendor driver raised an error, so this
---     restores that behavior.
---
--- Callers capture results with INSERT INTO ... EXEC sync.erp_exec_at @sql.
 -- Arm a fault: the next @fail_calls calls matching both patterns fail. One
 -- fault at a time: arming clears earlier ones, because they share the sequence
 -- and their callers would otherwise consume this fault's count.
@@ -91,6 +82,18 @@ BEGIN
     INSERT INTO sync.fault (caller_like, sql_like, fail_calls, seq_start) VALUES (@caller_like, @sql_like, @fail_calls, @start + 1);
 END;
 GO
+
+-- The only way to run a statement on the ERP.
+--
+-- Stands in for the vendor driver behind the linked server:
+--   * rejects any statement longer than the text limit, before sending it;
+--   * raises a hard error when a statement runs to the linked server's query
+--     timeout and returns nothing. Microsoft's provider reports a timeout only
+--     as an informational message and returns no rows, with no error to catch
+--     (see proofs/00-infrastructure.md). The vendor driver raised an error, so
+--     this restores that behavior.
+--
+-- Callers capture results with INSERT INTO ... EXEC sync.erp_exec_at @sql.
 
 CREATE OR ALTER PROCEDURE sync.erp_exec_at
     @sql     nvarchar(max),
@@ -124,10 +127,15 @@ BEGIN
         END;
     END;
 
+    -- A SET option resets @@ROWCOUNT to 0. A timed-out call leaves it there;
+    -- a call that returns rows sets it, however close to the limit it ran.
+    DECLARE @rows int;
+    SET NOCOUNT ON;
     EXEC (@sql) AT ERP;
+    SET @rows = @@ROWCOUNT;
 
     DECLARE @ms int = DATEDIFF(millisecond, @started, SYSDATETIME());
-    IF @timeout_s > 0 AND @ms >= @timeout_s * 1000 - 250
+    IF @timeout_s > 0 AND @ms >= @timeout_s * 1000 - 250 AND @rows = 0
     BEGIN
         SET @msg = CONCAT(N'Query timeout expired after ', @timeout_s, N' seconds.');
         THROW 50002, @msg, 1;

@@ -6,11 +6,11 @@ DECLARE @nights int = (SELECT COUNT(*) FROM legacy.run) - 1;
 DECLARE @tables int = (SELECT COUNT(*) FROM legacy.manifest);
 DECLARE @last int = (SELECT MAX(run_id) FROM legacy.run);
 DECLARE @old_wrong int, @old_missing int, @old_extra int, @old_mismatch int, @old_dups int, @old_errors int, @new_dirty int, @new_audits int;
-SELECT @old_wrong = SUM(IIF(missing + extra + mismatched + duplicate_keys > 0, 1, 0)),
+SELECT @old_wrong = SUM(IIF(problems > 0, 1, 0)),
        @old_missing = SUM(missing), @old_extra = SUM(extra), @old_mismatch = SUM(mismatched), @old_dups = SUM(duplicate_keys)
 FROM audit.result WHERE copy_name = 'legacy' AND run_id = @last;
 SELECT @old_errors = COUNT(*) FROM legacy.load_log WHERE message IS NOT NULL;
-SELECT @new_audits = COUNT(*), @new_dirty = SUM(IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present > 0, 1, 0))
+SELECT @new_audits = COUNT(*), @new_dirty = SUM(IIF(problems > 0, 1, 0))
 FROM audit.result WHERE copy_name = 'replica';
 
 PRINT CONCAT('**After ', @nights, ' nights, the old process had ', @old_wrong, ' of ', @tables, ' tables wrong, and had raised ',
@@ -31,11 +31,11 @@ DECLARE c CURSOR LOCAL FAST_FORWARD FOR
                   ' | ', o.wrong, ' | ', FORMAT(o.missing, 'N0'), ' | ', FORMAT(o.extra, 'N0'), ' | ', FORMAT(o.mismatched, 'N0'),
                   ' | ', FORMAT(o.dups, 'N0'), ' | ', e.errors, ' | ', n.wrong, ' |')
     FROM legacy.run r
-    CROSS APPLY (SELECT SUM(IIF(missing + extra + mismatched + duplicate_keys > 0, 1, 0)) wrong, SUM(missing) missing,
+    CROSS APPLY (SELECT SUM(IIF(problems > 0, 1, 0)) wrong, SUM(missing) missing,
                         SUM(extra) extra, SUM(mismatched) mismatched, SUM(duplicate_keys) dups
                  FROM audit.result WHERE copy_name = 'legacy' AND run_id = r.run_id) o
     CROSS APPLY (SELECT COUNT(*) errors FROM legacy.load_log WHERE run_id = r.run_id AND message IS NOT NULL) e
-    CROSS APPLY (SELECT SUM(IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present > 0, 1, 0)) wrong
+    CROSS APPLY (SELECT SUM(IIF(problems > 0, 1, 0)) wrong
                  FROM audit.result WHERE copy_name = 'replica' AND run_id = r.run_id) n
     ORDER BY r.run_id;
 OPEN c; FETCH NEXT FROM c INTO @line;
@@ -60,7 +60,7 @@ DECLARE c2 CURSOR LOCAL FAST_FORWARD FOR
     JOIN sync.manifest s ON s.table_name = m.table_name
     JOIN audit.result a ON a.copy_name = 'legacy' AND a.run_id = @last AND a.table_name = m.table_name
     WHERE m.load_mode = 'incremental'
-    ORDER BY a.missing + a.extra + a.mismatched + a.duplicate_keys DESC;
+    ORDER BY a.problems DESC;
 OPEN c2; FETCH NEXT FROM c2 INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c2 INTO @line; END;
 CLOSE c2; DEALLOCATE c2;

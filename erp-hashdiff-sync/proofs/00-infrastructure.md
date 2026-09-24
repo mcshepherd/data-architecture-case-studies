@@ -14,7 +14,7 @@ Expected: succeeds, connected as erp_reader.
 EXEC ('SELECT SUSER_NAME() AS login_name, DB_NAME() AS database_name') AT ERP
 ```
 
-Exit code 0 after 0s:
+Exit code 0 after 1s:
 
 ```
 login_name database_name
@@ -47,7 +47,7 @@ Expected: permission denied, on a table that exists.
 EXEC ('INSERT INTO dbo.write_probe (id) VALUES (1)') AT ERP
 ```
 
-Exit code 1 after 1s:
+Exit code 1 after 0s:
 
 ```
 Msg 229, Level 14, State 5, Server erp, Line 1

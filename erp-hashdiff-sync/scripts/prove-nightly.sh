@@ -9,7 +9,7 @@
 source "$(dirname "$0")/lib.sh"
 nights="${1:-7}"
 wsql() { sql warehouse -d warehouse -h -1 -W "$@"; }
-run_at() { date -j -v+"$1"d -f '%Y-%m-%d %H:%M' '2026-01-01 02:00' '+%Y-%m-%d %H:%M'; }
+run_at() { python3 -c "import datetime,sys; print((datetime.datetime(2026,1,1,2,0)+datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%d %H:%M'))" "$1"; }
 one_night() {
     local n="$1" at; at="$(run_at "$n")"
     bash scripts/sync.sh --run-at "$at" || true

@@ -7,7 +7,7 @@ source "$(dirname "$0")/lib.sh"
 wq() { sql warehouse -d warehouse -h -1 -W -Q "SET NOCOUNT ON; $1"; }
 eq() { sql erp -d erp_sim -h -1 -W -Q "SET NOCOUNT ON; $1"; }
 night=0
-at() { date -j -v+"$1"d -f '%Y-%m-%d %H:%M' '2026-01-01 02:00' '+%Y-%m-%d %H:%M'; }
+at() { python3 -c "import datetime,sys; print((datetime.datetime(2026,1,1,2,0)+datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%d %H:%M'))" "$1"; }
 next_night() { night=$((night + 1)); eq "EXEC dbo.usp_run_night $night" >/dev/null; }
 sync_night() { bash scripts/sync.sh --run-at "$(at "$night")" "$@" >/dev/null || true; }
 run() { wq "SELECT MAX(run_id) FROM sync.run"; }
@@ -22,17 +22,21 @@ fingerprint() {
 }
 audit_one() {
     wq "DECLARE @r int = (SELECT MAX(run_id) FROM sync.run); EXEC audit.usp_audit_table N'$1', @r, 'replica';
-        SELECT IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present = 0, 'clean',
+        SELECT IIF(problems = 0, 'clean',
                    CONCAT(missing, ' missing, ', extra, ' extra, ', mismatched, ' stale')) FROM audit.result
         WHERE copy_name = 'replica' AND run_id = @r AND table_name = N'$1'"
 }
 logged() { wq "SELECT CONCAT(ISNULL($2, 0), '') FROM sync.run_table_log WHERE log_id = (SELECT MAX(log_id) FROM sync.run_table_log WHERE table_name = N'$1')"; }
 
+# Mailpit must be up before anything is reset: the proof reads alert emails from it.
+mailpit=http://127.0.0.1:18025/api/v1
+curl -sf "$mailpit/info" >/dev/null || { echo "Mailpit is not reachable at $mailpit; run scripts/up.sh" >&2; exit 1; }
+
 echo "rebuild and first load"
 bash scripts/build-erp.sh 7 >/dev/null
 sql erp -i /sql/erp/30_sim_scenarios.sql >/dev/null
-wq "EXEC sync.usp_reset; DELETE FROM audit.result; DELETE FROM sync.fault; DELETE FROM sync.alert; EXEC sync.usp_probe_metadata;" >/dev/null
-curl -s -X DELETE http://127.0.0.1:18025/api/v1/messages >/dev/null  # empty the Mailpit inbox
+wq "EXEC sync.usp_reset; DELETE FROM audit.result; EXEC sync.usp_probe_metadata;" >/dev/null
+curl -sf -X DELETE "$mailpit/messages" >/dev/null  # empty the inbox
 sync_night
 f04=proofs/04-failure-and-recovery.md
 {
@@ -48,20 +52,20 @@ echo "A: batch failures, recovered by batch retries"
 next_night
 wq "EXEC sync.usp_arm_fault N'%:tm_timesheet_3', N'%JOIN (VALUES%', 2" >/dev/null
 sync_night
-A_att=$(attempts tm_timesheet_3); A_aud=$(audit_one tm_timesheet_3)
+A_run=$(run); A_att=$(attempts tm_timesheet_3); A_aud=$(audit_one tm_timesheet_3)
 
 echo "B: a table attempt fails, the runner's retry succeeds"
 next_night
 wq "EXEC sync.usp_arm_fault N'%:pj_project', N'%JOIN (VALUES%', 3" >/dev/null
 sync_night
-B_att=$(attempts pj_project); B_aud=$(audit_one pj_project)
+B_run=$(run); B_att=$(attempts pj_project); B_aud=$(audit_one pj_project)
 
 echo "C: a table fails for the night, then heals"
 next_night
 C_before=$(fingerprint bl_fee)
 wq "EXEC sync.usp_arm_fault N'%:bl_fee', N'%JOIN (VALUES%', 9" >/dev/null
 sync_night
-C_att=$(attempts bl_fee); C_after=$(fingerprint bl_fee); C_aud=$(audit_one bl_fee)
+C_run=$(run); C_att=$(attempts bl_fee); C_after=$(fingerprint bl_fee); C_aud=$(audit_one bl_fee)
 next_night
 sync_night
 C_heal=$(attempts bl_fee); C_heal_aud=$(audit_one bl_fee)
@@ -70,7 +74,7 @@ echo "D: the key-and-hash pull times out"
 next_night
 wq "EXEC sync.usp_arm_fault N'%:gl_period_5', N'%DECLARE @d%', 1" >/dev/null
 sync_night
-D_att=$(attempts gl_period_5); D_aud=$(audit_one gl_period_5)
+D_run=$(run); D_att=$(attempts gl_period_5); D_aud=$(audit_one gl_period_5)
 
 echo "E: variance guard"
 next_night
@@ -78,7 +82,7 @@ E_before=$(fingerprint pj_project)
 eq "EXEC dbo.usp_hold_rows N'pj_project', 5" >/dev/null
 E_held=$(eq "SELECT FORMAT(COUNT(*), 'N0') FROM dbo.hold__pj_project")
 sync_night
-E_att=$(attempts pj_project); E_after=$(fingerprint pj_project)
+E_run=$(run); E_att=$(attempts pj_project); E_after=$(fingerprint pj_project)
 eq "EXEC dbo.usp_restore_rows N'pj_project'" >/dev/null
 next_night
 sync_night
@@ -92,7 +96,7 @@ F_secs=$(( $(date +%s) - F_start ))
 F_ok=$(wq "SELECT COUNT(*) FROM sync.run_table_log WHERE run_id = (SELECT MAX(run_id) FROM sync.run) AND status = 'succeeded'")
 F_rows=$(wq "SELECT FORMAT(SUM(inserted), 'N0') FROM sync.run_table_log WHERE run_id = (SELECT MAX(run_id) FROM sync.run) AND status = 'succeeded'")
 wq "DECLARE @r int = (SELECT MAX(run_id) FROM sync.run); EXEC audit.usp_audit_run @r, 'replica';" >/dev/null
-F_aud=$(wq "SELECT CONCAT(SUM(IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present = 0, 1, 0)), ' of ', COUNT(*), ' tables clean')
+F_aud=$(wq "SELECT CONCAT(SUM(IIF(problems = 0, 1, 0)), ' of ', COUNT(*), ' tables clean')
             FROM audit.result WHERE copy_name = 'replica' AND run_id = (SELECT MAX(run_id) FROM sync.run)")
 
 {
@@ -113,26 +117,41 @@ F_aud=$(wq "SELECT CONCAT(SUM(IIF(missing + extra + mismatched + duplicate_keys 
 } >> "$f04"
 
 echo "alerts"
-# Wait for Database Mail to hand everything to the mail server, then read the
-# inbox back from Mailpit's API.
+# Wait for Database Mail to finish, then check every alert reached the inbox.
 for _ in $(seq 1 30); do
     [[ $(wq "SELECT COUNT(*) FROM msdb.dbo.sysmail_unsentitems") == 0 ]] && break
     sleep 2
 done
 sleep 3
+failed_mail=$(wq "SELECT COUNT(*) FROM msdb.dbo.sysmail_faileditems f JOIN sync.alert a ON a.mailitem_id = f.mailitem_id")
+alerts_logged=$(wq "SELECT COUNT(*) FROM sync.alert")
+inbox=$(curl -sf "$mailpit/messages" | python3 -c "import json,sys; print(json.load(sys.stdin)['messages_count'])")
+if [[ "$failed_mail" != 0 || "$inbox" != "$alerts_logged" ]]; then
+    echo "alert delivery check failed: $alerts_logged alerts logged, $inbox in the inbox, $failed_mail failed in Database Mail" >&2
+    exit 1
+fi
 runs=$(wq "SELECT COUNT(*) FROM sync.run")
-python3 - "$runs" >> "$f04" <<'PY'
-import json, sys, urllib.request
+python3 - "$runs" "A=$A_run" "B=$B_run" "C=$C_run" "D=$D_run" "E=$E_run" >> "$f04" <<'PY'
+import json, re, sys, urllib.request
 api = "http://127.0.0.1:18025/api/v1"
+runs = int(sys.argv[1])
+scenario = dict(a.split("=") for a in sys.argv[2:])
 msgs = json.load(urllib.request.urlopen(f"{api}/messages"))["messages"]
 msgs.sort(key=lambda m: m["Created"])
+emailed = {re.match(r"\[sync\] Run (\d+):", m["Subject"]).group(1) for m in msgs}
+quiet = [name for name, run in sorted(scenario.items()) if run not in emailed]
+alerted = [name for name, run in sorted(scenario.items()) if run in emailed]
+def names(xs):
+    return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]
 print()
 print("## Alerts")
 print()
 print(f"The runner calls `sync.usp_alert_run` at the end of every run, as the original SSIS package ran a Send Mail task on failure: "
-      f"one email per run, and only if a table ended the run failed. It goes out through Database Mail to Mailpit, which catches it. "
-      f"Over the {sys.argv[1]} runs above, {len(msgs)} email{'s' if len(msgs) != 1 else ''} went out. Scenarios A, B, and D sent none: "
-      f"every table there ended its run succeeded, even where an attempt failed along the way.")
+      f"one email per run, and only if a table ended the run anything but succeeded. It goes out through Database Mail to Mailpit, which catches it. "
+      f"Over the {runs} runs above, {len(msgs)} email{'s' if len(msgs) != 1 else ''} went out, "
+      f"for scenario{'s' if len(alerted) != 1 else ''} {names(alerted) if alerted else 'none'}. "
+      + (f"Scenario{'s' if len(quiet) != 1 else ''} {names(quiet)} sent none: every table there ended its run succeeded, even where an attempt failed along the way. " if quiet else "")
+      + "Every alert logged in `sync.alert` reached the inbox, and none failed in Database Mail.")
 for m in msgs:
     full = json.load(urllib.request.urlopen(f"{api}/message/{m['ID']}"))
     to = ", ".join(a["Address"] for a in full["To"])
@@ -146,11 +165,7 @@ PY
 
 echo "edge cases"
 key_table=$(eq "SELECT dbo.key_case_table()")
-case5_table=$(eq "SELECT TOP 1 a.table_name FROM dbo.design_column a JOIN dbo.design_column b ON b.table_name = a.table_name AND b.ordinal = a.ordinal + 1
-                 JOIN dbo.design_table d ON d.table_name = a.table_name
-                 WHERE a.role = 'data' AND b.role = 'data' AND a.data_type = 'varchar' AND b.data_type = 'varchar'
-                   AND a.max_length >= 10 AND b.max_length >= 10 AND d.churn = 'static' AND d.is_wide = 0
-                 ORDER BY d.row_count, a.table_name, a.ordinal")
+case5_table=$(eq "SELECT table_name FROM dbo.case5_pair()")
 eq "DELETE FROM dbo.edge_log; EXEC dbo.usp_edge_case 5, 1; EXEC dbo.usp_edge_case 6, 1;" >/dev/null
 bash scripts/sync.sh --run-at "$(at "$night")" tm_expense_3 pj_milestone "$case5_table" >/dev/null
 rows=()

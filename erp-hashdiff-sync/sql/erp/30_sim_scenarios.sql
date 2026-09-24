@@ -70,6 +70,21 @@ IF OBJECT_ID('dbo.edge_log') IS NULL
     );
 GO
 
+-- Case 5's target: the first adjacent pair of text columns in a small table
+-- that nightly activity never touches. Used by usp_edge_case and the proof script.
+CREATE OR ALTER FUNCTION dbo.case5_pair ()
+RETURNS TABLE
+AS
+RETURN
+    SELECT TOP 1 a.table_name, a.column_name, b.column_name AS next_column
+    FROM dbo.design_column a
+    JOIN dbo.design_column b ON b.table_name = a.table_name AND b.ordinal = a.ordinal + 1
+    JOIN dbo.design_table d ON d.table_name = a.table_name
+    WHERE a.role = 'data' AND b.role = 'data' AND a.data_type = 'varchar' AND b.data_type = 'varchar'
+          AND a.max_length >= 10 AND b.max_length >= 10 AND d.churn = 'static' AND d.is_wide = 0
+    ORDER BY d.row_count, a.table_name, a.ordinal;
+GO
+
 -- One targeted change to one row, recording whether the naive hash would see it.
 -- @step 1 sets up a starting state where a case needs one; @step 2 makes the change.
 CREATE OR ALTER PROCEDURE dbo.usp_edge_case
@@ -93,17 +108,10 @@ BEGIN
        OR (@case_no = 4 AND data_type = 'datetime')
        OR (@case_no = 6 AND data_type IN ('varchar', 'nvarchar')))
     ORDER BY IIF(@case_no = 6, -ordinal, ordinal);
-    -- A pipe can only move unseen between neighboring columns: pick an
-    -- adjacent pair of text columns in a small table that nothing else touches.
+    -- A pipe can only move unseen between neighboring columns.
     IF @case_no = 5
     BEGIN
-        SELECT TOP 1 @t = a.table_name, @col = a.column_name, @col2 = b.column_name
-        FROM dbo.design_column a
-        JOIN dbo.design_column b ON b.table_name = a.table_name AND b.ordinal = a.ordinal + 1
-        JOIN dbo.design_table d ON d.table_name = a.table_name
-        WHERE a.role = 'data' AND b.role = 'data' AND a.data_type = 'varchar' AND b.data_type = 'varchar'
-              AND a.max_length >= 10 AND b.max_length >= 10 AND d.churn = 'static' AND d.is_wide = 0
-        ORDER BY d.row_count, a.table_name, a.ordinal;
+        SELECT @t = table_name, @col = column_name, @col2 = next_column FROM dbo.case5_pair();
         SELECT @keys = STRING_AGG(QUOTENAME(column_name), N', ') WITHIN GROUP (ORDER BY key_ordinal)
         FROM dbo.design_column WHERE table_name = @t AND role = 'key';
     END;

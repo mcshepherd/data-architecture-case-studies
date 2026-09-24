@@ -6,7 +6,7 @@ DECLARE @runs int = (SELECT COUNT(*) FROM sync.run);
 DECLARE @tables int = (SELECT COUNT(*) FROM sync.manifest WHERE is_active = 1);
 DECLARE @failures int = (SELECT COUNT(*) FROM sync.run_table_log WHERE status <> 'succeeded');
 DECLARE @dirty int = (SELECT COUNT(*) FROM audit.result
-                      WHERE copy_name = 'replica' AND missing + extra + mismatched + duplicate_keys + deleted_but_present > 0);
+                      WHERE copy_name = 'replica' AND problems > 0);
 DECLARE @audited int = (SELECT COUNT(*) FROM audit.result WHERE copy_name = 'replica');
 
 PRINT CONCAT('**Result: ', IIF(@failures = 0 AND @dirty = 0 AND @audited = @runs * @tables, 'PASS', 'FAIL'), '.** ',
@@ -32,7 +32,7 @@ DECLARE c CURSOR LOCAL FAST_FORWARD FOR
                         SUM(fetched) fetched, SUM(batches) batches, SUM(driver_calls) calls, MAX(max_sql_chars) max_chars,
                         DATEDIFF(second, MIN(started_at), MAX(finished_at)) seconds
                  FROM sync.run_table_log WHERE run_id = r.run_id) l
-    CROSS APPLY (SELECT COUNT(*) n, SUM(IIF(missing + extra + mismatched + duplicate_keys + deleted_but_present = 0, 1, 0)) clean,
+    CROSS APPLY (SELECT COUNT(*) n, SUM(IIF(problems = 0, 1, 0)) clean,
                         SUM(missing) missing, SUM(extra) extra, SUM(mismatched) mismatched,
                         SUM(duplicate_keys) dups, SUM(deleted_but_present) del_present
                  FROM audit.result WHERE copy_name = 'replica' AND run_id = r.run_id) a
@@ -42,6 +42,16 @@ WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c INTO @line; END;
 CLOSE c; DEALLOCATE c;
 PRINT '';
 PRINT 'Keys pulled is every key in the ERP, with a hash of its whole row, in one statement per table. Rows fetched is only what was new or changed. Deleted is keys that disappeared from the ERP, flagged in the replica.';
+PRINT '';
+
+-- The slowest statement against the ERP, as a share of the timeout.
+DECLARE @timeout_s int = (SELECT query_timeout FROM sys.servers WHERE name = N'ERP');
+DECLARE @slow_ms int, @slow_caller nvarchar(200), @slow_chars int;
+SELECT TOP 1 @slow_ms = duration_ms, @slow_caller = caller, @slow_chars = sql_chars
+FROM sync.driver_log WHERE caller NOT LIKE N'legacy:%' AND caller NOT IN (N'probe', N'proof') ORDER BY duration_ms DESC;
+PRINT CONCAT('The slowest statement sent to the ERP across all runs took ', FORMAT(@slow_ms / 1000.0, 'N1'), ' seconds (',
+             SUBSTRING(@slow_caller, CHARINDEX(':', @slow_caller) + 1, 200), ', ', FORMAT(@slow_chars, 'N0'), ' characters), ',
+             FORMAT(@slow_ms / (@timeout_s * 10.0), 'N0'), '% of the ', @timeout_s, '-second timeout.');
 PRINT '';
 
 -- How the text limit shapes batches: fixed statement text versus room for keys.

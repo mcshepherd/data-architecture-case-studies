@@ -55,30 +55,25 @@ IF OBJECT_ID('sync.alert') IS NULL
     );
 GO
 
--- One email per run, only if a table ended the run in failure. A table's
--- outcome is its last attempt: a table that failed once and then succeeded
--- is not an alert. A variance-guard stop is called out separately, because it
--- needs a person to look before the next run, not just a rerun.
+-- One email per run, only if a table ended the run anything but succeeded.
+-- A table's outcome is its last attempt (sync.fn_run_outcome), so a table
+-- that failed once and then succeeded is not an alert. A variance-guard stop
+-- is called out separately, because it needs a person to look before the next
+-- run, not just a rerun.
 CREATE OR ALTER PROCEDURE sync.usp_alert_run
     @run_id int
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @failed TABLE (table_name sysname, status varchar(12), attempts int, message nvarchar(2000));
-    INSERT INTO @failed
-    SELECT l.table_name, l.status, a.attempts, l.message
-    FROM sync.run_table_log l
-    CROSS APPLY (SELECT COUNT(*) AS attempts FROM sync.run_table_log x
-                 WHERE x.run_id = l.run_id AND x.table_name = l.table_name) a
-    WHERE l.run_id = @run_id
-      AND l.log_id = (SELECT MAX(log_id) FROM sync.run_table_log x WHERE x.run_id = l.run_id AND x.table_name = l.table_name)
-      AND l.status <> 'succeeded';
+    DECLARE @outcome TABLE (table_name sysname, status varchar(12), attempts int, message nvarchar(2000));
+    INSERT INTO @outcome SELECT table_name, status, attempts, message FROM sync.fn_run_outcome(@run_id);
 
-    IF NOT EXISTS (SELECT 1 FROM @failed) RETURN;
+    DECLARE @n_bad int = (SELECT COUNT(*) FROM @outcome WHERE status <> 'succeeded');
+    IF @n_bad = 0 RETURN;
 
-    DECLARE @n_failed int = (SELECT COUNT(*) FROM @failed WHERE status = 'failed');
-    DECLARE @n_variance int = (SELECT COUNT(*) FROM @failed WHERE status = 'variance');
-    DECLARE @n_ok int = (SELECT COUNT(DISTINCT table_name) FROM sync.run_table_log WHERE run_id = @run_id) - (SELECT COUNT(*) FROM @failed);
+    DECLARE @n_variance int = (SELECT COUNT(*) FROM @outcome WHERE status = 'variance');
+    DECLARE @n_failed int = @n_bad - @n_variance;
+    DECLARE @n_ok int = (SELECT COUNT(*) FROM @outcome) - @n_bad;
     DECLARE @run_at datetime2(0) = (SELECT run_at FROM sync.run WHERE run_id = @run_id);
     DECLARE @recipients nvarchar(400) = (SELECT value FROM sync.config WHERE name = N'alert_recipients');
     DECLARE @nl nchar(1) = NCHAR(10), @gap nchar(2) = NCHAR(10) + NCHAR(10);
@@ -89,17 +84,24 @@ BEGIN
         IIF(@n_variance > 0, CONCAT(@n_variance, N' stopped by the variance guard'), N''));
 
     DECLARE @body nvarchar(max) = CONCAT(
-        N'Run ', @run_id, N' (', CONVERT(nvarchar(19), @run_at, 120), N'): ', @n_ok, N' tables succeeded, ',
-        @n_failed + @n_variance, N' did not.', @nl, @nl,
+        N'Run ', @run_id, N' (', CONVERT(nvarchar(19), @run_at, 120), N'): ',
+        @n_ok, N' table', IIF(@n_ok = 1, N'', N's'), N' succeeded, ', @n_bad, N' did not.', @nl, @nl,
         (SELECT STRING_AGG(CAST(CONCAT(
-                    table_name, N': ', IIF(status = 'variance', N'stopped by the variance guard', N'failed'),
-                    N' after ', attempts, N' attempt', IIF(attempts = 1, N'', N's'), N'.', @nl,
-                    N'  ', message, @nl,
-                    IIF(status = 'variance',
-                        N'  Not retried. The replica was left untouched. Check the source before the next run.',
-                        N'  The replica was left as it was before this run; the next run picks up what this one missed.'))
+                    table_name, N': ',
+                    CASE status
+                        WHEN 'variance' THEN N'stopped by the variance guard'
+                        WHEN 'interrupted' THEN N'interrupted before it finished'
+                        WHEN 'not started' THEN N'never started'
+                        ELSE N'failed' END,
+                    IIF(attempts > 0, CONCAT(N' after ', attempts, N' attempt', IIF(attempts = 1, N'', N's')), N''), N'.', @nl,
+                    IIF(message IS NULL, N'', CONCAT(N'  ', message, @nl)),
+                    CASE
+                        WHEN status = 'variance' THEN N'  Not retried. The replica was left untouched. Check the source before the next run.'
+                        WHEN status = 'not started' THEN N'  The replica was not touched.'
+                        WHEN message LIKE N'Error 50023:%' THEN N'  The replica was left as it was. It will fail every run until it is rebuilt.'
+                        ELSE N'  The replica was left as it was before this run; the next run picks up what this one missed.' END)
                 AS nvarchar(max)), @gap) WITHIN GROUP (ORDER BY status, table_name)
-         FROM @failed));
+         FROM @outcome WHERE status <> 'succeeded'));
 
     DECLARE @mailitem_id int;
     EXEC msdb.dbo.sp_send_dbmail

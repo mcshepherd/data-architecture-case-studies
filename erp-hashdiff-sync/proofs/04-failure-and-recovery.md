@@ -13,7 +13,7 @@ Each scenario runs on a real night of ERP activity, with a fault injected where 
 | **D. The key-and-hash pull times out** on `gl_period_5`, night 5 | 1 pull times out | failed (Error 50002: Query timeout expired (injected fault 4, call 1 of 1).); then succeeded | Updated on the second attempt | clean |
 | **E. A short pull** on `pj_project`, night 6 | 6,785 rows (5%) vanish from the ERP, as in a partial restore | variance (Error 50010: Variance guard: pulled 129344 keys, replica has 136002 active rows, allowance 1.0 percent.) | Untouched: no mass soft-delete. Before: 136,061 rows, 59 flagged deleted, checksum -1506025831. After: 136,061 rows, 59 flagged deleted, checksum -1506025831. | not audited: the ERP was short that night |
 | **E, next night** | rows restored | succeeded | Caught up | clean |
-| **F. Wipe and reload** of every table | `--wipe` | 120 of 120 tables reloaded through the normal path, 1,227,989 rows, in 1 min 0 s | Rebuilt from scratch | 120 of 120 tables clean |
+| **F. Wipe and reload** of every table | `--wipe` | 120 of 120 tables reloaded through the normal path, 1,227,989 rows, in 1 min 49 s | Rebuilt from scratch | 120 of 120 tables clean |
 
 - **A and B:** retries are nested. A failed batch is retried inside the procedure; a table whose batch fails three times is retried by the runner. A failed `INSERT ... EXEC` inserts nothing, so a retry never duplicates rows.
 - **C:** nothing is applied until every batch has been fetched and staged, and then everything is applied in one transaction. A table that fails is left exactly as it was the night before, and the next run picks up everything it missed.

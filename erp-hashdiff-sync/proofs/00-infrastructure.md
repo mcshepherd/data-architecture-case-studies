@@ -62,7 +62,7 @@ Expected: cancelled at 30s, although the query would finish at 40s. Note the exi
 EXEC ('WAITFOR DELAY ''00:00:40''; SELECT 1 AS finished') AT ERP
 ```
 
-Exit code 0 after 31s:
+Exit code 0 after 30s:
 
 ```
 OLE DB provider "MSOLEDBSQL" for linked server "ERP" returned message "Query timeout expired".

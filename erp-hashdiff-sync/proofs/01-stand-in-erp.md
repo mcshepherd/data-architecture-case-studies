@@ -78,6 +78,6 @@ Everything below goes through `sync.erp_exec_at`, as the read-only `erp_reader`.
 
 | Test | Characters | Outcome |
 |---|---|---|
-| Statement exactly at the text limit | 15,000 | Sent. Result returned. |
-| Statement one character over | 15,001 | Error 50001: Statement is 15001 characters; the driver limit is 15000. |
+| Statement exactly at the text limit | 32,767 | Sent. Result returned. |
+| Statement one character over | 32,768 | Error 50001: Statement is 32768 characters; the driver limit is 32767. |
 | Statement that runs past the timeout | 39 | Error 50002: Query timeout expired after 30 seconds. |

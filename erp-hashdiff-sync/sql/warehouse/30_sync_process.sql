@@ -8,7 +8,8 @@
 --   5. Send the keys back to the ERP inside the query text, as a VALUES list,
 --      in batches sized to the driver's text limit. Stage the rows locally.
 --   6. In one transaction: flag deletes, remove changed rows, insert staged rows.
---   7. Validate counts at every step, log them, drop staging.
+--   7. Validate every count before committing.
+--   8. Log the counts, then drop staging.
 --
 -- Everything sent to the ERP is generated from the metadata copy and the manifest.
 
@@ -250,7 +251,7 @@ BEGIN
     DECLARE @sql nvarchar(max), @remote nvarchar(max), @msg nvarchar(2000),
             @pulled int, @active_before int, @new int, @changed int, @deleted int, @requested int,
             @batches int = 0, @max_batch_keys int = 0, @fetched int = 0, @retries int = 0,
-            @flagged int = 0, @removed int = 0, @inserted int = 0, @active_after int;
+            @flagged int = 0, @removed int = 0, @inserted int = 0, @active_after int, @committed bit = 0;
 
     DECLARE @lock nvarchar(255) = CONCAT(N'sync:', @table_name), @lock_rc int;
 
@@ -455,8 +456,8 @@ BEGIN
             SET @sql = CONCAT(
                 N'WITH a AS (SELECT _batch, SUM(LEN(_key_literal) + 1) OVER (ORDER BY ', @order, N' ROWS UNBOUNDED PRECEDING) AS running_len ',
                 N'           FROM stage.', @hk, N' h), ',
-                N'b AS (SELECT _batch, (running_len - 1) / (@room - @m) AS char_batch FROM a), ',
-                N'c AS (SELECT _batch, char_batch, ROW_NUMBER() OVER (PARTITION BY char_batch ORDER BY char_batch) AS rn FROM b), ',
+                N'b AS (SELECT _batch, running_len, (running_len - 1) / (@room - @m) AS char_batch FROM a), ',
+                N'c AS (SELECT _batch, char_batch, ROW_NUMBER() OVER (PARTITION BY char_batch ORDER BY running_len) AS rn FROM b), ',
                 N'd AS (SELECT _batch, DENSE_RANK() OVER (ORDER BY char_batch, (rn - 1) / @cap) AS nb FROM c) ',
                 N'UPDATE d SET _batch = nb; ',
                 N'SELECT @batches = MAX(_batch) FROM stage.', @hk, N';',
@@ -525,7 +526,10 @@ BEGIN
             THROW 50013, @msg, 1;
         END;
         COMMIT;
+        SET @committed = 1;
 
+        -- 8. Log every count, then drop staging. The changes are committed by now, so an
+        --    error from here on is a logging or cleanup error, not a failed sync.
         UPDATE sync.run_table_log
         SET status = 'succeeded', finished_at = SYSDATETIME(), pulled_keys = @pulled, active_before = @active_before,
             new_keys = @new, changed_keys = @changed, deleted_keys = @deleted, requested = @requested,
@@ -534,24 +538,36 @@ BEGIN
             driver_calls = (SELECT COUNT(*) FROM sync.driver_log WHERE caller = @caller),
             max_sql_chars = (SELECT MAX(sql_chars) FROM sync.driver_log WHERE caller = @caller)
         WHERE log_id = @log_id;
-
         -- Drop staging only once the log records success.
-        IF EXISTS (SELECT 1 FROM sync.run_table_log WHERE log_id = @log_id AND status = 'succeeded')
-        BEGIN
-            SET @sql = CONCAT(N'DROP TABLE stage.', @hk, N'; DROP TABLE stage.', @del, N'; DROP TABLE stage.', @rows, N';');
-            EXEC (@sql);
-        END;
+        IF @@ROWCOUNT <> 1
+            THROW 50014, 'The log row for this run is missing, so staging was kept.', 1;
+        SET @sql = CONCAT(N'DROP TABLE stage.', @hk, N'; DROP TABLE stage.', @del, N'; DROP TABLE stage.', @rows, N';');
+        EXEC (@sql);
         EXEC sp_releaseapplock @Resource = @lock, @LockOwner = 'Session';
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
         IF APPLOCK_MODE(N'public', @lock, N'Session') <> N'NoLock'
             EXEC sp_releaseapplock @Resource = @lock, @LockOwner = 'Session';
+        IF @committed = 1
+        BEGIN
+            -- The replica is already right. Keep the success, record the error, and
+            -- leave staging for the next run to replace. Raise only if nothing can be logged.
+            UPDATE sync.run_table_log
+            SET status = 'succeeded', finished_at = ISNULL(finished_at, SYSDATETIME()),
+                message = CONCAT(N'Applied, then error ', ERROR_NUMBER(), N': ', ERROR_MESSAGE())
+            WHERE log_id = @log_id;
+            IF @@ROWCOUNT = 1 RETURN;
+            THROW;
+        END;
         UPDATE sync.run_table_log
         SET status = IIF(ERROR_NUMBER() = 50010, 'variance', 'failed'), finished_at = SYSDATETIME(),
             pulled_keys = @pulled, active_before = @active_before, new_keys = @new, changed_keys = @changed,
-            deleted_keys = @deleted, requested = @requested, batches = @batches, fetched = @fetched,
-            batch_retries = @retries, message = CONCAT(N'Error ', ERROR_NUMBER(), N': ', ERROR_MESSAGE())
+            deleted_keys = @deleted, requested = @requested, batches = @batches, max_batch_keys = @max_batch_keys,
+            fetched = @fetched, batch_retries = @retries,
+            driver_calls = (SELECT COUNT(*) FROM sync.driver_log WHERE caller = @caller),
+            max_sql_chars = (SELECT MAX(sql_chars) FROM sync.driver_log WHERE caller = @caller),
+            message = CONCAT(N'Error ', ERROR_NUMBER(), N': ', ERROR_MESSAGE())
         WHERE log_id = @log_id;
         THROW;
     END CATCH;

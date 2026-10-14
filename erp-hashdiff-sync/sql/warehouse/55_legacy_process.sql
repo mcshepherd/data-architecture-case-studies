@@ -12,6 +12,11 @@
 -- row overwrites every sibling that shares the partial key, key column
 -- included, turning distinct rows into duplicates. None of it raises an error.
 --
+-- The package applied pulled rows one at a time, so when several shared a
+-- partial key the last one written won. UPDATE ... FROM would pick one at
+-- random, so this picks the last in key order explicitly, and the proofs come
+-- out the same on every run.
+--
 -- It uses the same driver (sync.erp_exec_at) and so the same limits.
 
 USE warehouse;
@@ -50,6 +55,7 @@ BEGIN
     DECLARE @t nvarchar(300) = QUOTENAME(@table_name);
     DECLARE @caller nvarchar(200) = CONCAT(N'legacy:', @run_id, N':', @table_name);
     DECLARE @col_defs nvarchar(max), @col_list nvarchar(max), @sets nvarchar(max), @on nvarchar(max),
+            @part nvarchar(max), @last nvarchar(max),
             @remote nvarchar(max), @sql nvarchar(max), @pulled int, @updated int = 0, @inserted int = 0;
 
     SELECT @col_defs = STRING_AGG(CAST(CONCAT(QUOTENAME(column_name), N' ',
@@ -59,8 +65,12 @@ BEGIN
            @sets = STRING_AGG(CAST(CONCAT(QUOTENAME(column_name), N'=s.', QUOTENAME(column_name)) AS nvarchar(max)), N',')
                    WITHIN GROUP (ORDER BY ordinal)
     FROM sync.source_columns WHERE table_name = @table_name;
-    SELECT @on = STRING_AGG(CAST(CONCAT(N't.', QUOTENAME(TRIM(value)), N'=s.', QUOTENAME(TRIM(value))) AS nvarchar(max)), N' AND ')
+    SELECT @on = STRING_AGG(CAST(CONCAT(N't.', QUOTENAME(TRIM(value)), N'=s.', QUOTENAME(TRIM(value))) AS nvarchar(max)), N' AND '),
+           @part = STRING_AGG(CAST(QUOTENAME(TRIM(value)) AS nvarchar(max)), N',')
     FROM STRING_SPLIT(@upsert_key, N',');
+    -- The ERP's real key orders the siblings; the last one wins.
+    SELECT @last = STRING_AGG(CAST(CONCAT(QUOTENAME(TRIM(k.value)), N' DESC') AS nvarchar(max)), N',')
+    FROM sync.manifest m CROSS APPLY STRING_SPLIT(m.key_columns, N',') k WHERE m.table_name = @table_name;
 
     INSERT INTO legacy.load_log (run_id, table_name, load_mode, started_at) VALUES (@run_id, @table_name, @mode, SYSDATETIME());
 
@@ -94,7 +104,8 @@ BEGIN
             SET @sql = CONCAT(
                 N'CREATE TABLE #s (', @col_defs, N'); ',
                 N'INSERT INTO #s (', @col_list, N') EXEC sync.erp_exec_at @remote, @caller; SET @p = @@ROWCOUNT; ',
-                N'UPDATE t SET ', @sets, N' FROM legacy.', @t, N' t JOIN #s s ON ', @on, N'; SET @u = @@ROWCOUNT; ',
+                N'UPDATE t SET ', @sets, N' FROM legacy.', @t, N' t JOIN (SELECT *, ROW_NUMBER() OVER (PARTITION BY ', @part,
+                N' ORDER BY ', @last, N') AS rn__ FROM #s) s ON ', @on, N' AND s.rn__ = 1; SET @u = @@ROWCOUNT; ',
                 N'INSERT INTO legacy.', @t, N' (', @col_list, N') SELECT ', @col_list, N' FROM #s s ',
                 N'WHERE NOT EXISTS (SELECT 1 FROM legacy.', @t, N' t WHERE ', @on, N'); SET @i = @@ROWCOUNT;');
             EXEC sp_executesql @sql, N'@remote nvarchar(max), @caller nvarchar(200), @p int OUTPUT, @u int OUTPUT, @i int OUTPUT',

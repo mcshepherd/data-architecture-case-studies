@@ -571,7 +571,7 @@ BEGIN
     TRUNCATE TABLE sync.run_plan;
     TRUNCATE TABLE sync.run_table_log;
     TRUNCATE TABLE sync.driver_log;
-    DELETE FROM sync.fault;
+    TRUNCATE TABLE sync.fault;  -- also restarts fault_id, which the proofs print
     IF OBJECT_ID(N'sync.alert') IS NOT NULL TRUNCATE TABLE sync.alert;
 END;
 GO

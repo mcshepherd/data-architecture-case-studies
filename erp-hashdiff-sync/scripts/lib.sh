@@ -8,6 +8,8 @@ set -a; source .env; set +a
 export MSYS_NO_PATHCONV=1
 # Windows Python writes cp1252 by default; proofs need UTF-8.
 export PYTHONUTF8=1
+# Windows often has only `python`, and its `python3` may be a Store placeholder that runs nothing.
+python3 -c '' >/dev/null 2>&1 || python3() { python "$@"; }
 
 # sql <erp|warehouse> <sqlcmd args...>
 sql() {

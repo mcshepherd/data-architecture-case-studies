@@ -100,7 +100,7 @@ The original was written in T-SQL on SQL Server and orchestrated by SSIS; its co
 
 ## Run it
 
-Requires Docker (Docker Desktop or OrbStack), bash, python3, and curl. About three minutes to the first two proofs; the rest take about an hour and a half.
+Requires Docker (Docker Desktop or OrbStack), bash, Python 3 (as `python3` or `python`), and curl. About three minutes to the first two proofs; the rest take about an hour and a half.
 
 ```sh
 ./scripts/up.sh                # start both SQL Server instances and Mailpit, and install all SQL objects

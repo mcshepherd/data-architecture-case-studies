@@ -1,6 +1,6 @@
 # erp-hashdiff-sync
 
-As technical lead and data architect, reporting to the CTO, I designed and built, alone, the nightly replication of a vendor ERP: roughly 700 tables and 2 billion rows, reconciled every night in about 38 minutes. It replaced a 9-hour process that silently missed changes, duplicated rows, and kept deleted ones. It compares every row by key and hash, fetches only what changed, and detects deletes the ERP never records.
+As technical lead and data architect, reporting to the CIO, I designed and built, alone, the nightly replication of a vendor ERP: roughly 700 tables and 2 billion rows, reconciled every night in about 38 minutes. It replaced a 9-hour process that silently missed changes, duplicated rows, and kept deleted ones. It compares every row by key and hash, fetches only what changed, and detects deletes the ERP never records.
 
 The ERP keeps no record of deletes (no tombstones), its modified dates can't be trusted, it declares none of its keys, and it sits behind a proprietary driver with a hard query timeout and a query-text limit. The client's code and data cannot be shared, so this repository rebuilds the problem from its constraints in T-SQL, over a real SQL Server linked server, reimplements the solution from scratch, and proves it against a generated stand-in ERP.
 

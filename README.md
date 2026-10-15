@@ -4,7 +4,7 @@
 
 Clean-room rebuilds of production systems I designed and built. Client code can't be shared, so each case study rebuilds the problem from its constraints and proves the solution against a generated stand-in. Each rebuild is written with Claude Code from my account of the design, and every claim is backed by a generated proof.
 
-**Start here:** [old process against new](erp-hashdiff-sync/proofs/03-old-versus-new.md), a week in which the old ERP sync silently drifted by 68,936 discrepancies while the new one stayed exact. Then [the method essay](erp-hashdiff-sync/essay/method.pdf).
+**Start here:** [old process against new](erp-hashdiff-sync/proofs/03-old-versus-new.md), a week in which the old ERP sync silently drifted by 68,936 discrepancies while the new one stayed exact. Then [a real fetch statement](erp-hashdiff-sync/proofs/06-fetch-statement.md): with nothing allowed on the ERP's side, 1,723 keys travel inside the query text itself. Then [the method essay](erp-hashdiff-sync/essay/method.pdf).
 
 | Case study | Problem | Stack | Status |
 |---|---|---|---|
@@ -21,7 +21,7 @@ Each claim is about the production system. Its evidence comes from the stand-in 
 | Compares every row every night by key and row hash, and transfers only what changed | [Nightly correctness](erp-hashdiff-sync/proofs/02-nightly-correctness.md): all 1.2M keys compared nightly, about 1,900 rows fetched |
 | Detects deletes although the ERP emits no tombstones | [Nightly correctness](erp-hashdiff-sync/proofs/02-nightly-correctness.md): every delete flagged, audited against the ERP |
 | No missing or duplicate data: every table reconciled before commit, then audited independently | [Nightly correctness](erp-hashdiff-sync/proofs/02-nightly-correctness.md): 960 of 960 independent table audits clean; [the reconciliation step](erp-hashdiff-sync/sql/warehouse/30_sync_process.sql#L520) rolls back any table whose counts disagree |
-| Works within the driver's query-length limit and hard timeout, with batched dynamic SQL generated per table from metadata | [Stand-in ERP](erp-hashdiff-sync/proofs/01-stand-in-erp.md) for the limits; [the batching step](erp-hashdiff-sync/sql/warehouse/30_sync_process.sql#L434) for the arithmetic |
+| Works within the driver's query-length limit and hard timeout, with batched dynamic SQL generated per table from metadata | [Fetch statement](erp-hashdiff-sync/proofs/06-fetch-statement.md): a real batch of 1,723 keys, 22 characters under the limit; [Stand-in ERP](erp-hashdiff-sync/proofs/01-stand-in-erp.md) for the limits; [the batching step](erp-hashdiff-sync/sql/warehouse/30_sync_process.sql#L434) for the arithmetic |
 | Handles tables over 250 columns | [Nightly correctness](erp-hashdiff-sync/proofs/02-nightly-correctness.md): tables up to 318 columns, with fewer keys per batch |
 | Each row carries its load time and a delete flag; each run logs per-table counts and runtimes | [The replica tables and run log](erp-hashdiff-sync/sql/warehouse/30_sync_process.sql) |
 | Ran unattended: failures retry, and a failed table leaves no partial data | [Failure and recovery](erp-hashdiff-sync/proofs/04-failure-and-recovery.md) |

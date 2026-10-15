@@ -17,9 +17,12 @@ GO
 -- The vendor driver's query-text limit. The exact figure is not recalled, but it
 -- was never tight: batches ran to 2,000 keys or more. 32,767 (a signed 16-bit
 -- length) gives batches that size here; the widest pull needs about 12,800.
+-- capture_sql is test scaffolding: '1' makes the wrapper keep each statement's
+-- text in sync.driver_log, for proof 06. Every install resets it to '0'.
 MERGE sync.config AS t
 USING (VALUES
-    (N'text_limit', N'32767')
+    (N'text_limit', N'32767'),
+    (N'capture_sql', N'0')
 ) AS s (name, value)
 ON t.name = s.name
 WHEN MATCHED THEN UPDATE SET value = s.value
@@ -47,8 +50,12 @@ IF OBJECT_ID('sync.driver_log') IS NULL
         called_at    datetime2(3)  NOT NULL,
         duration_ms  int           NOT NULL,
         sql_chars    int           NOT NULL,
-        caller       nvarchar(200) NULL
+        caller       nvarchar(200) NULL,
+        rows_back    int           NULL,
+        sql_text     nvarchar(max) NULL   -- only while capture_sql is '1'
     );
+IF COL_LENGTH('sync.driver_log', 'rows_back') IS NULL
+    ALTER TABLE sync.driver_log ADD rows_back int NULL, sql_text nvarchar(max) NULL;
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_driver_log_caller' AND object_id = OBJECT_ID('sync.driver_log'))
     CREATE INDEX ix_driver_log_caller ON sync.driver_log (caller);
 GO
@@ -141,7 +148,8 @@ BEGIN
         THROW 50002, @msg, 1;
     END;
 
-    INSERT INTO sync.driver_log (called_at, duration_ms, sql_chars, caller)
-    VALUES (@started, @ms, @chars, @caller);
+    INSERT INTO sync.driver_log (called_at, duration_ms, sql_chars, caller, rows_back, sql_text)
+    VALUES (@started, @ms, @chars, @caller, @rows,
+            CASE WHEN EXISTS (SELECT 1 FROM sync.config WHERE name = N'capture_sql' AND value = N'1') THEN @sql END);
 END;
 GO

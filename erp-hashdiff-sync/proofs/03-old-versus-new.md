@@ -45,13 +45,13 @@ The full-reload tables stay correct: they are rebuilt every night. The damage is
  
 | Run | Old: rows pulled | Old: minutes | New: keys compared | New: rows fetched | New: minutes |
 |---|---|---|---|---|---|
-| First load | 1,224,007 | 1.5 | 1,224,007 | 1,224,007 | 1.9 |
+| First load | 1,224,007 | 1.6 | 1,224,007 | 1,224,007 | 1.9 |
 | Night 1 | 558,756 | 0.7 | 1,224,566 | 1,832 | 0.6 |
-| Night 2 | 559,450 | 0.7 | 1,225,139 | 1,895 | 0.5 |
-| Night 3 | 560,074 | 0.7 | 1,225,688 | 1,862 | 0.6 |
+| Night 2 | 559,450 | 0.7 | 1,225,139 | 1,895 | 0.6 |
+| Night 3 | 560,074 | 0.7 | 1,225,688 | 1,862 | 0.5 |
 | Night 4 | 560,775 | 0.7 | 1,226,262 | 1,926 | 0.6 |
-| Night 5 | 561,471 | 0.7 | 1,226,810 | 1,982 | 0.5 |
-| Night 6 | 562,149 | 0.7 | 1,227,400 | 1,885 | 0.6 |
-| Night 7 | 562,855 | 0.6 | 1,227,989 | 1,884 | 0.5 |
+| Night 5 | 561,471 | 0.7 | 1,226,810 | 1,982 | 0.6 |
+| Night 6 | 562,149 | 0.7 | 1,227,400 | 1,885 | 0.5 |
+| Night 7 | 562,855 | 0.7 | 1,227,989 | 1,884 | 0.5 |
  
 The old process reloads most tables in full every night and pulls only a window of the large ones. The new process compares every key every night, but fetches full rows only for what changed. At this scale both finish in under a minute a night, so the difference that matters here is correctness. At the original site, the old process took about 9 hours a night and the new one about 38 minutes.

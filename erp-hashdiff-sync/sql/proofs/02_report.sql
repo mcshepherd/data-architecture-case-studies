@@ -59,7 +59,7 @@ DECLARE @limit int = (SELECT CAST(value AS int) FROM sync.config WHERE name = N'
 PRINT '## Batching on the first load';
 PRINT '';
 PRINT CONCAT('Each fetch statement carries its keys as literals in a VALUES list and must fit the ', FORMAT(@limit, 'N0'),
-             '-character text limit, with at most 5,000 rows per batch. The select list is fixed text, so wide tables have less room for keys.');
+             '-character text limit, with at most 5,000 rows per batch. The select list is fixed text, so wide tables have less room for keys, and longer keys mean fewer of them fit: ar_dunning, the table the essay shows, has a three-column key.');
 PRINT '';
 PRINT '| Table | Columns | Key | Rows | Batches | Most keys in a batch | Longest statement |';
 PRINT '|---|---|---|---|---|---|---|';
@@ -72,7 +72,9 @@ DECLARE c2 CURSOR LOCAL FAST_FORWARD FOR
     WHERE l.run_id = 1 AND l.table_name IN (
         SELECT TOP 3 table_name FROM sync.source_columns GROUP BY table_name ORDER BY COUNT(*) DESC
         UNION ALL
-        SELECT TOP 3 table_name FROM sync.run_table_log WHERE run_id = 1 ORDER BY fetched DESC)
+        SELECT TOP 3 table_name FROM sync.run_table_log WHERE run_id = 1 ORDER BY fetched DESC
+        UNION ALL
+        SELECT N'ar_dunning')
     ORDER BY c.n DESC;
 OPEN c2; FETCH NEXT FROM c2 INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c2 INTO @line; END;

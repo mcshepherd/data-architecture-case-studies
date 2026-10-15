@@ -67,6 +67,17 @@ code,pre{font-variant-ligatures:none;font-feature-settings:"liga" 0,"calt" 0;}
 .hljs-built_in,.hljs-type{color:var(--code-kw);}
 .email{white-space:pre-wrap;font-size:.8rem;}
 
+.budget{display:grid;gap:.45rem;margin:.2rem 0 0;font-family:var(--sans);font-size:.82rem;}
+.budget-row{display:grid;grid-template-columns:4rem 1fr 10.5rem;align-items:center;gap:.6rem;}
+.budget-label{color:var(--muted);font-weight:600;}
+.budget-bar{display:flex;height:1.15rem;background:var(--code-bg);border:1px solid var(--rule);border-radius:3px;overflow:hidden;}
+.budget-bar i{display:block;height:100%;}
+.budget .fixed,.swatch.fixed{background:var(--mark);}
+.budget .keys,.swatch.keys{background:var(--accent);}
+.budget-note{color:var(--muted);font-variant-numeric:tabular-nums;}
+.swatch{display:inline-block;width:.75em;height:.75em;border-radius:2px;margin:0 .3em 0 .15em;vertical-align:-.05em;}
+@media (max-width:520px){ .budget-row{grid-template-columns:3.6rem 1fr;} .budget-note{grid-column:2;margin-top:-.3rem;} }
+
 .table-wrap{overflow-x:auto;margin:1rem 0 1.4rem;}
 table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:.88rem;line-height:1.4;}
 th,td{text-align:left;padding:.45rem .6rem .45rem 0;border-bottom:1px solid var(--rule);vertical-align:top;}
@@ -249,15 +260,28 @@ WHERE t._is_deleted = 0
        s.[modified_on], s.[hours_001], s.[label_002], s.[ext_id_003],
        s.[closed_004], s.[rate_005], s.[start_date_006], s.[note_007], s.[balance_008]
 FROM dbo.[ar_dunning] s
-JOIN (VALUES (1,'C''3','L000'),
+JOIN (VALUES (1,'C''3','L''3'),
+             (1,'C''3','L000'),
              (1,'C''3','L001'),
-             (1,'C''3','L002')) v([dunning_id], [dunning_code], [line_code])
+             /* … 1,717 more keys … */
+             (41,'C006','L004'),
+             (41,'C006','L005'),
+             (42,'C''3','L''3')) v([dunning_id], [dunning_code], [line_code])
   ON s.[dunning_id] = v.[dunning_id]
  AND s.[dunning_code] = v.[dunning_code]
  AND s.[line_code] = v.[line_code]</code></pre>
-<figcaption>Three keys shown; a first-load batch holds over two thousand. The code <code>C'3</code> goes in as <code>'C''3'</code>. Unescaped, the first quoted code would end the string and break the batch.</figcaption>
+<figcaption>The first batch of <code>ar_dunning</code>'s first load, reformatted, with the middle cut: 1,723 keys in a statement sent as 32,745 characters. <a href="https://github.com/mcshepherd/data-architecture-case-studies/blob/main/erp-hashdiff-sync/proofs/06-fetch-statement.md">Proof 06</a> prints all of it. The code <code>L'3</code> goes in as <code>'L''3'</code>. Unescaped, the first quoted code would end the string and break the batch.</figcaption>
 </figure>
-<p>The batch size is arithmetic on the statement. The select list is the same for every batch of a table, so what remains of the text limit is the room for keys. A running sum of literal lengths closes each batch before it would overflow, with a cap of 5,000 rows:</p>
+<p>The batch size is arithmetic on the statement. The select list, the <code>FROM</code>, and the join are the same for every batch of a table: 387 characters here. The rest of the 32,767-character limit, 32,380 characters, is room for keys. These keys average 18.8 characters with their commas, so the first batch carries 1,723 of them and ends 22 characters short of the limit; the last batch carries the remaining 1,038.</p>
+<figure>
+<div class="budget" role="img" aria-label="Three batches against the 32,767-character limit. Batch 1: 387 fixed, 1,723 keys in 32,358 characters, 22 spare. Batch 2: 387 fixed, 1,703 keys in 32,356 characters, 24 spare. Batch 3: 387 fixed, 1,038 keys in 20,027 characters, 12,353 spare.">
+  <div class="budget-row"><span class="budget-label">Batch 1</span><span class="budget-bar"><i class="fixed" style="width:1.18%"></i><i class="keys" style="width:98.75%"></i></span><span class="budget-note">1,723 keys · 22 spare</span></div>
+  <div class="budget-row"><span class="budget-label">Batch 2</span><span class="budget-bar"><i class="fixed" style="width:1.18%"></i><i class="keys" style="width:98.75%"></i></span><span class="budget-note">1,703 keys · 24 spare</span></div>
+  <div class="budget-row"><span class="budget-label">Batch 3</span><span class="budget-bar"><i class="fixed" style="width:1.18%"></i><i class="keys" style="width:61.12%"></i></span><span class="budget-note">1,038 keys · 12,353 spare</span></div>
+</div>
+<figcaption>Each bar is the 32,767-character limit: <span class="swatch fixed"></span>fixed text, 387 characters; <span class="swatch keys"></span>key literals; the rest unused. All 4,464 keys of the table's first load, in three statements, each returning exactly one row per key.</figcaption>
+</figure>
+<p>A running sum of literal lengths closes each batch before it would overflow, with a cap of 5,000 rows:</p>
 <figure>
 <pre><code class="language-sql">WITH a AS (SELECT _batch,
                   SUM(LEN(_key_literal) + 1)
@@ -275,7 +299,7 @@ JOIN (VALUES (1,'C''3','L000'),
                   DENSE_RANK() OVER (ORDER BY char_batch, (rn - 1) / @row_cap) AS nb
            FROM c)
 UPDATE d SET _batch = nb;</code></pre>
-<figcaption>From the procedure, with variables renamed for reading. <code>@room</code> is the text limit minus the statement's fixed text. Dividing by <code>@room - @longest_literal</code> keeps one longest key's worth of space spare, so a batch never overflows. <code>@row_cap</code> is 5,000. On the first load, batches landed at up to 32,764 characters against the stand-in's 32,767 limit. A 318-column table fits about 2,200 keys per batch; a narrow one about 2,550.</figcaption>
+<figcaption>From the procedure, with variables renamed for reading. <code>@room</code> is the text limit minus the statement's fixed text. Dividing by <code>@room - @longest_literal</code> keeps one longest key's worth of space spare, so a batch never overflows. <code>@row_cap</code> is 5,000. Across the whole first load, batches landed at up to 32,764 characters. How many keys fit depends on the keys as much as the columns: with the same two-part key, a 318-column table fits about 2,200 per batch and a 14-column one about 2,550.</figcaption>
 </figure>
 
 <h2><span class="step">6–7</span>Apply everything at once, then prove the counts</h2>

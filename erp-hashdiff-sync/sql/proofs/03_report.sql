@@ -42,7 +42,7 @@ OPEN c; FETCH NEXT FROM c INTO @line;
 WHILE @@FETCH_STATUS = 0 BEGIN PRINT @line; FETCH NEXT FROM c INTO @line; END;
 CLOSE c; DEALLOCATE c;
 PRINT '';
-PRINT 'The drift grows night over night and never raises an error. Nothing in the old process''s own logs would show it. The exact counts vary slightly from run to run: when the package''s key matches several rows, SQL Server applies whichever it reaches first, which is itself part of the bug.';
+PRINT 'The drift grows night over night and never raises an error. Nothing in the old process''s own logs would show it. When the package''s partial key matches several pulled rows, the last one in key order wins, as the package''s one-row-at-a-time writes did, so the counts are the same on every run.';
 PRINT '';
 
 PRINT '## Where the old process goes wrong';

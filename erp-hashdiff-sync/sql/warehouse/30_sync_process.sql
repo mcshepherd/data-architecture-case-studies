@@ -121,7 +121,7 @@ GO
 -- marker no text value contains. @d and @n are declared at the top of the
 -- statement sent to the ERP.
 -- Each type needs its own cast: the default conversions round money to two
--- places, drop float precision, and drop datetime milliseconds. A type not
+-- places, drop float precision, and cut datetime to the minute. A type not
 -- listed returns NULL, and the sync refuses the table rather than guess.
 CREATE OR ALTER FUNCTION sync.fn_hash_piece (@column_name sysname, @data_type sysname)
 RETURNS nvarchar(400)

@@ -255,7 +255,7 @@ JOIN (VALUES (1,'C''3','L000'),
   ON s.[dunning_id] = v.[dunning_id]
  AND s.[dunning_code] = v.[dunning_code]
  AND s.[line_code] = v.[line_code]</code></pre>
-<figcaption>Three keys shown; a first-load batch holds hundreds to over a thousand. The code <code>C'3</code> goes in as <code>'C''3'</code>. Unescaped, the first quoted code would end the string and break the batch.</figcaption>
+<figcaption>Three keys shown; a first-load batch holds over two thousand. The code <code>C'3</code> goes in as <code>'C''3'</code>. Unescaped, the first quoted code would end the string and break the batch.</figcaption>
 </figure>
 <p>The batch size is arithmetic on the statement. The select list is the same for every batch of a table, so what remains of the text limit is the room for keys. A running sum of literal lengths closes each batch before it would overflow, with a cap of 5,000 rows:</p>
 <figure>
@@ -309,7 +309,7 @@ UPDATE d SET _batch = nb;</code></pre>
 COMMIT;</code></pre>
 <figcaption>Abridged: the join conditions are the same three-column key match as above. The apply runs as one generated statement that returns its counts through output parameters; they are shown inline here.</figcaption>
 </figure>
-<p>That makes failure cheap. Retries are nested, three per batch inside the procedure and three per table in the runner, and a failed <code>INSERT … EXEC</code> inserts nothing, so a retry never duplicates a row. A table that fails every attempt is left exactly as it was the night before, and the next run picks up everything it missed. The one email per bad run, as the original sync's SSIS package sent, says so:</p>
+<p>That makes failure cheap. Attempts are nested, up to three per fetch batch inside the procedure and three per table in the runner, and a failed <code>INSERT … EXEC</code> inserts nothing, so a retry never duplicates a row. A table that fails every attempt is left exactly as it was the night before, and the next run picks up everything it missed. The one email per bad run, as the original sync's SSIS package sent, says so:</p>
 <figure>
 <pre class="email"><code>Run 7 (2026-01-07 02:00:00): 119 tables succeeded, 1 did not.
 
@@ -320,7 +320,7 @@ pj_project: stopped by the variance guard after 1 attempt.
 </figure>
 
 <h2><span class="step">8</span>Log every count, then clean up</h2>
-<p>Every table writes one log row per run: when it started and finished, how many keys it pulled, how many were new, changed, and deleted, how many rows it requested, fetched, and wrote, how many batches it sent and retried, and the longest statement it sent to the ERP. A table that fails records how far it got, from its pull, compare, and fetch counts, and the error that stopped it. The alert email above is built from this log.</p>
+<p>Every attempt at a table writes one log row: when it started and finished, how many keys it pulled, how many were new, changed, and deleted, how many rows it requested, fetched, and wrote, how many batches it sent and retried, and the longest statement it sent to the ERP. A table that fails records how far it got, from its pull, compare, and fetch counts, and the error that stopped it. The alert email above is built from this log.</p>
 <p>Staging is dropped only after the log records success. A failed table keeps the staging from its last attempt for inspection until its next run starts fresh. Once the changes are committed, an error in logging or cleanup is recorded against the run but does not mark the table failed, because its replica is already right; only a missing log row, which leaves nothing to record against, raises the error.</p>
 <figure>
 <pre><code class="language-sql">UPDATE sync.run_table_log
@@ -343,7 +343,7 @@ DROP TABLE stage.[ar_dunning__rows];</code></pre>
 <div class="results">
   <div><b>960 of 960</b>table audits clean over the first load and seven nights</div>
   <div><b>1,884 rows</b>fetched on night 7, after comparing all 1,227,989 keys</div>
-  <div><b>68,936 rows</b>wrong or missing in the rebuilt old process's copy after seven nights, with no errors raised</div>
+  <div><b>68,936</b>discrepancies in the rebuilt old process's copy after seven nights, with no errors raised</div>
 </div>
 
 <h2>What I would do differently</h2>

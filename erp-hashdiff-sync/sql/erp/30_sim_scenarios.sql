@@ -36,7 +36,7 @@ BEGIN
 END;
 GO
 
--- The obvious first-draft row hash, for contrast: text columns as they are,
+-- The naive row hash, for contrast: text columns as they are,
 -- everything else by default conversion, NULL as empty string, a single-pipe
 -- delimiter, and no varchar(max). Each of those hides a real change; the
 -- sync's hash avoids all of them. (With any nvarchar column in the row, this

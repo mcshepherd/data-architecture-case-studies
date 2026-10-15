@@ -209,10 +209,10 @@ FROM dbo.[ar_dunning]</code></pre>
   <li><strong>The delimiter is <code>$|$</code></strong>, so a pipe moving from one value to its neighbor cannot produce the same string.</li>
   <li><strong>Every <code>CONCAT</code> starts from <code>@m</code>, a <code>varchar(max)</code>.</strong> Without it, SQL Server silently truncates at 8,000 characters, or 4,000 once an <code>nvarchar</code> column joins in. I hit this in production; the rebuild hit it again independently. <code>CONCAT</code> takes at most 254 arguments, so wide tables nest one per 126 columns.</li>
 </ul>
-<p>Each row below is a one-row change made in the stand-in ERP. An obvious first-draft hash (default conversions, NULL as an empty string, a single pipe, no <code>varchar(max)</code>) misses every one; the sync catches them all.</p>
+<p>Each row below is a one-row change made in the stand-in ERP. A naive hash (default conversions, NULL as an empty string, a single pipe, no <code>varchar(max)</code>) misses every one; the sync catches them all.</p>
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Change</th><th>Before → after</th><th>First-draft hash</th><th>This sync</th></tr></thead>
+  <thead><tr><th>Change</th><th>Before → after</th><th>Naive hash</th><th>This sync</th></tr></thead>
   <tbody>
     <tr><td>NULL becomes an empty string</td><td><code>NULL</code> → <code>''</code></td><td class="miss">misses it</td><td class="ok">changed</td></tr>
     <tr><td>money, fourth decimal</td><td>27563.3800 → 27563.3801</td><td class="miss">misses it</td><td class="ok">changed</td></tr>

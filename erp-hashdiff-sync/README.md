@@ -117,6 +117,8 @@ The original was written in T-SQL on SQL Server and orchestrated by SSIS; its co
 
 Requires Docker (Docker Desktop or OrbStack), bash, Python 3 (as `python3` or `python`), curl, and openssl. About three minutes to the first two proofs; the rest take about an hour and a half.
 
+Give Docker at least 4 GB of memory: each SQL Server instance needs about 2 GB. Microsoft's SQL Server image is built for x86 only, so on an Apple Silicon Mac it runs under emulation (enable Rosetta in Docker's settings) and is slower. The proofs were generated on x86. To read the evidence without running anything, open [`proofs/`](proofs/).
+
 ```sh
 ./scripts/up.sh                # start both SQL Server instances and Mailpit, and install all SQL objects
 ./scripts/build-erp.sh         # generate the stand-in ERP (seed 7, about a minute)

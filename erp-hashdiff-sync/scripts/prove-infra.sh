@@ -55,6 +55,31 @@ sql erp -Q "USE erp; DROP TABLE dbo.write_probe;" >/dev/null
 run "Queries are killed at the timeout" "Expected: cancelled at ${QUERY_TIMEOUT_S}s, although the query would finish at $((QUERY_TIMEOUT_S + 10))s. Note the exit code: the provider reports the timeout as an informational message, not an error." \
     "WAITFOR DELAY '00:00:$((QUERY_TIMEOUT_S + 10))'; SELECT 1 AS finished"
 
+# Rows that keep arriving are not cut off. Three chunks of rows with pauses
+# shorter than the timeout, so the query runs past the timeout in total.
+pause=$((QUERY_TIMEOUT_S * 2 / 3))
+chunk="SELECT TOP (50000) REPLICATE('x', 200) AS r FROM sys.all_objects a CROSS JOIN sys.all_objects b"
+stream="$chunk; WAITFOR DELAY '00:00:$pause'; $chunk; WAITFOR DELAY '00:00:$pause'; $chunk"
+started=$(date +%s)
+set +e
+output=$(sql warehouse -h -1 -W -Q "SET NOCOUNT ON; EXEC ('${stream//$q/$q$q}') AT ERP" 2>&1)
+rc=$?
+set -e
+ended=$(date +%s)
+{
+    echo "## Queries that keep returning rows run past the timeout"
+    echo
+    echo "Expected: all 150,000 rows arrive, although the query runs past the ${QUERY_TIMEOUT_S}s timeout, because no pause between rows is as long as the timeout. The timeout limits how long the provider waits for rows, not how long a query runs. A query that computes before its first row, such as the one above, must finish inside the timeout; one that streams rows need not. The vendor driver behaved the same way."
+    echo
+    echo '```sql'
+    echo "EXEC ('${stream//$q/$q$q}') AT ERP"
+    echo '```'
+    echo
+    echo "Exit code $rc after $((ended - started))s: $(grep -c '^x' <<<"$output") rows returned."
+    grep -v '^x' <<<"$output" | sed '/^$/d' | sed 's/^/    /' || true
+    echo
+} >> "$out"
+
 {
     echo "## Timeouts are silent inside a procedure"
     echo

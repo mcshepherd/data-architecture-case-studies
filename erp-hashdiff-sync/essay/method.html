@@ -115,7 +115,7 @@ footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--rule);font-fa
 <h2>The constraints decide the design</h2>
 <p>The ERP was reachable only through a linked server backed by the vendor's proprietary driver. Six facts shaped everything that follows:</p>
 <ul class="plain">
-  <li><strong>A 15-minute hard timeout</strong> on every query.</li>
+  <li><strong>A 15-minute hard timeout</strong> on any query that has not yet returned a row. A plain <code>SELECT *</code> streams and can run for hours; a query that computes must finish inside it.</li>
   <li><strong>A limit on query-text length</strong>, which caps how much any one statement can say.</li>
   <li><strong>Read-only access.</strong> No staging tables, temp tables, or views on the vendor's side.</li>
   <li><strong>No tombstones.</strong> A deleted row simply disappears.</li>

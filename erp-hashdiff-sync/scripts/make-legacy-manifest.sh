@@ -4,8 +4,8 @@
 # Tables of 20,000 rows or more that carry create and modify dates were loaded
 # incrementally: rows dated within the last 7 or 30 days, upserted on a key
 # that omits the last column of the real composite key. Everything else was
-# fully reloaded. At the original site the split was "full reload takes longer
-# than the timeout"; at this scale no full reload does, so size stands in.
+# fully reloaded. At the original site the split was "full reload takes 30
+# minutes or more"; at this scale no full reload does, so size stands in.
 source "$(dirname "$0")/lib.sh"
 out=sql/warehouse/50_legacy_manifest.sql
 {

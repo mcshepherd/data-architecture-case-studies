@@ -32,7 +32,7 @@ The ERP was reachable only through a SQL Server linked server, backed by the ven
 - **Create and modify dates that cannot be trusted:** sometimes missing, sometimes not updated when a row changes.
 - **Undeclared keys.** The catalog marks no primary keys. The real keys are composite (an int, usually codes, sometimes a date) and had to be read from the vendor's data dictionary.
 
-The inherited process was two SSIS packages. One fully reloaded the tables small enough to reload: correct, but most of a 9-hour window. The other ran incremental upserts on the large tables, filtered by those unreliable dates and keyed on the wrong columns, because whoever built it had not understood the composite keys. The result was missed changes, collapsed and duplicated rows, and deletes that were never seen, with no errors anywhere.
+The inherited process was two SSIS packages. One fully reloaded the tables small enough to reload: correct, but most of a 9-hour window. The other ran incremental upserts on the large tables, filtered by those unreliable dates and matched on keys that left out a column of the real composite key. The result was missed changes, collapsed and duplicated rows, and deletes that were never seen, with no errors anywhere.
 
 ## The design
 
